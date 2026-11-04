@@ -32,6 +32,7 @@
     <button id="follow">Follow camera</button>
     <button id="allcams">All cameras</button>
     <button id="inferred" hidden>Inferred floor</button>
+    <button id="meshbtn" hidden>Points</button>
     <label>Point size <input id="psize" type="range" min="0.5" max="6" step="0.1" value="2"></label>
   </div>
   <div class="row"><label>Open .ply / cameras.json <input id="file" type="file" multiple accept=".ply,.json" hidden></label></div>
@@ -69,7 +70,10 @@ function parsePLY(buf) {
   const head = new TextDecoder().decode(new Uint8Array(buf, 0, Math.min(4096, buf.byteLength)));
   const end = head.indexOf("end_header\n") + "end_header\n".length;
   const n = parseInt(/element vertex (\d+)/.exec(head)[1]);
-  const props = [...head.slice(0, end).matchAll(/property (\w+) (\w+)/g)].map(m => [m[1], m[2]]);
+  // vertex properties only (the face element has its own "property list ..." line)
+  const vsec = head.slice(head.indexOf("element vertex"), end);
+  const vsec2 = vsec.indexOf("element", 1) > 0 ? vsec.slice(0, vsec.indexOf("element", 1)) : vsec;
+  const props = [...vsec2.matchAll(/property (\w+) (\w+)/g)].map(m => [m[1], m[2]]);
   const size = { float: 4, float32: 4, uchar: 1, uint8: 1, double: 8 };
   const stride = props.reduce((s, p) => s + size[p[0]], 0);
   const dv = new DataView(buf, end);
@@ -83,12 +87,44 @@ function parsePLY(buf) {
     if (off.red) { col[3*i] = rd(b, off.red)/255; col[3*i+1] = rd(b, off.green)/255; col[3*i+2] = rd(b, off.blue)/255; }
     else col.fill(0.8, 3*i, 3*i+3);
   }
-  return { pos, col, n };
+  // optional triangle faces ("element face N" / "property list uchar int ...")
+  let index = null;
+  const fm = /element face (\d+)/.exec(head);
+  if (fm && +fm[1] > 0) {
+    const nf = +fm[1];
+    index = new Uint32Array(nf * 3);
+    const fdv = new DataView(buf, end + n * stride);
+    let o = 0, k = 0;
+    for (let i = 0; i < nf; i++) {
+      const c = fdv.getUint8(o); o += 1;
+      for (let j = 0; j < c; j++) { const v = fdv.getInt32(o, true); o += 4; if (j < 3) index[k++] = v; }
+    }
+  }
+  return { pos, col, n, index };
 }
 
 let points, cams = [], frustums, traj, liveFrustum, trail, center = new THREE.Vector3(), radius = 1;
 const pointMat = new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true });
 
+// TSDF mesh (solid surface). When present it is shown instead of the point cloud.
+let mesh = null;
+const meshBtn = document.getElementById("meshbtn");
+meshBtn.onclick = () => {
+  if (!mesh) return;
+  mesh.visible = !mesh.visible; if (points) points.visible = !mesh.visible;
+  meshBtn.textContent = mesh.visible ? "Points" : "Mesh";
+};
+function setMesh(p) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(p.pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
+  g.setIndex(new THREE.BufferAttribute(p.index, 1));
+  mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  root.add(mesh);
+  if (points) points.visible = false;
+  meshBtn.hidden = false;
+  statusEl.textContent = `${(p.index.length / 3).toLocaleString()} triangles` + (cams.length ? ` · ${cams.length} cameras` : "");
+}
 function setPLY(p) {
   if (points) root.remove(points);
   const g = new THREE.BufferGeometry();
@@ -96,7 +132,8 @@ function setPLY(p) {
   g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
   g.computeBoundingSphere();
   points = new THREE.Points(g, pointMat); root.add(points);
-  statusEl.textContent = `${p.n.toLocaleString()} points` + (cams.length ? ` · ${cams.length} cameras` : "");
+  if (mesh) points.visible = !mesh.visible;
+  if (!mesh) statusEl.textContent = `${p.n.toLocaleString()} points` + (cams.length ? ` · ${cams.length} cameras` : "");
   frame();
 }
 
@@ -207,6 +244,7 @@ const plyURL = q.get("ply") || "dense.ply", camURL = q.get("cams") || "cameras.j
 try { const r = await fetch("view.json"); if (r.ok) knownUp = (await r.json()).up || null; } catch {}
 try { const r = await fetch(camURL); if (r.ok) setCams(await r.json()); } catch {}
 try { const r = await fetch("inferred_floor.ply"); if (r.ok) setInferred(parsePLY(await r.arrayBuffer())); } catch {}
+try { const r = await fetch("mesh.ply"); if (r.ok) { const m = parsePLY(await r.arrayBuffer()); if (m.index) setMesh(m); } } catch {}
 try { const r = await fetch(plyURL); if (r.ok) setPLY(parsePLY(await r.arrayBuffer()));
       else statusEl.textContent = "Open or drop dense.ply + cameras.json"; }
 catch { statusEl.textContent = "Open or drop dense.ply + cameras.json"; }
