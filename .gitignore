@@ -12,3 +12,4 @@ DerivedData/
 xcuserdata/
 # Captures received by tools/receive_server.py
 captures/
+.pytest_cache/

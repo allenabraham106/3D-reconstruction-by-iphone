@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>pioneer_map</name>
+  <version>0.1.0</version>
+  <description>Serve an iPhone-scanned map (3d-reconstruction-by-iphone output) to ROS 2 / nav2:
+    occupancy grid via nav2 map_server, 3D voxels as PointCloud2, mesh as an RViz marker.</description>
+  <maintainer email="112788997+allenabraham106@users.noreply.github.com">Allen Abraham</maintainer>
+  <license>MIT</license>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
