@@ -22,7 +22,8 @@ def probe(video: Path) -> dict:
     return s
 
 
-def extract(video: Path, out_dir: Path, target_frames=300, max_side=1280, candidates_per_pick=4):
+def extract(video: Path, out_dir: Path, target_frames=300, max_side=1280, candidates_per_pick=4,
+            min_change=3.0):
     info = probe(video)
     hdr = info.get("color_transfer") in ("arib-std-b67", "smpte2084")
     dur = max(info["duration"], 1e-3)
@@ -49,17 +50,22 @@ def extract(video: Path, out_dir: Path, target_frames=300, max_side=1280, candid
         sharp.append(cv2.Laplacian(g, cv2.CV_64F).var())
     sharp = np.array(sharp)
     out_dir.mkdir(parents=True, exist_ok=True)
-    n = 0
+    n, dropped, last = 0, 0, None
     for s in range(0, len(cands), candidates_per_pick):
         w = sharp[s:s + candidates_per_pick]
         best = s + int(np.argmax(w))
         if sharp[best] < 0.25 * np.median(sharp):  # whole window blurred: skip
             continue
+        small = cv2.resize(cv2.imread(str(cands[best]), cv2.IMREAD_GRAYSCALE), (160, 120))
+        if last is not None and np.abs(small.astype(np.float32) - last).mean() < min_change:
+            dropped += 1  # phone (nearly) still: no new viewpoint, and it confuses SfM
+            continue
+        last = small.astype(np.float32)
         shutil.copy(cands[best], out_dir / f"frame_{n:05d}.jpg")
         n += 1
     shutil.rmtree(tmp)
     print(f"[frames] {video.name}: {info.get('codec_name')} {info['width']}x{info['height']} "
-          f"{dur:.1f}s hdr={hdr} -> {n} keyframes in {out_dir}")
+          f"{dur:.1f}s hdr={hdr} -> {n} keyframes ({dropped} near-duplicates dropped) in {out_dir}")
     return n
 
 

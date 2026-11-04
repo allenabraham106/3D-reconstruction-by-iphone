@@ -8,7 +8,17 @@ from pathlib import Path
 import pycolmap
 
 
-def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600):
+def _map(db, image_dir, out):
+    out.mkdir(parents=True, exist_ok=True)
+    opts = pycolmap.IncrementalPipelineOptions()
+    recs = pycolmap.incremental_mapping(db, image_dir, out, options=opts)
+    if not recs:
+        return None
+    return recs[max(recs, key=lambda k: recs[k].num_reg_images())]
+
+
+def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600,
+            exhaustive_limit: int = 400):
     work.mkdir(parents=True, exist_ok=True)
     db = work / "database.db"
     if db.exists():
@@ -28,13 +38,20 @@ def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600
     pairing.quadratic_overlap = True
     pycolmap.match_sequential(db, pairing_options=pairing, device=pycolmap.Device.cpu)
     print(f"[sfm] matching {time.time()-t:.0f}s")
-    opts = pycolmap.IncrementalPipelineOptions()
-    recs = pycolmap.incremental_mapping(db, image_dir, work / "sparse", options=opts)
-    print(f"[sfm] mapping {time.time()-t:.0f}s")
-    if not recs:
+    n_images = len([p for p in image_dir.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
+    rec = _map(db, image_dir, work / "sparse")
+    print(f"[sfm] mapping {time.time()-t:.0f}s: {0 if rec is None else rec.num_reg_images()}/{n_images}")
+    if (rec is None or rec.num_reg_images() < 0.9 * n_images) and n_images <= exhaustive_limit:
+        # Split into several models (pauses, revisits, fast turns). Match every pair so
+        # revisited places link the pieces together, then map again.
+        print("[sfm] incomplete -> adding exhaustive matching for loop closure")
+        pycolmap.match_exhaustive(db, device=pycolmap.Device.cpu)
+        rec2 = _map(db, image_dir, work / "sparse_exhaustive")
+        if rec2 is not None and (rec is None or rec2.num_reg_images() > rec.num_reg_images()):
+            rec = rec2
+        print(f"[sfm] re-mapping {time.time()-t:.0f}s: {rec.num_reg_images()}/{n_images}")
+    if rec is None:
         raise RuntimeError("SfM failed: no reconstruction")
-    best_id = max(recs, key=lambda k: recs[k].num_reg_images())
-    rec = recs[best_id]
     out = work / "sparse_best"
     out.mkdir(exist_ok=True)
     rec.write(out)
