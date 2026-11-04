@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>NSCameraUsageDescription</key>
-	<string>PhoneScan uses the camera and LiDAR to capture images, depth and poses for 3D reconstruction.</string>
+	<string>Pioneer Home uses the camera and LiDAR to capture images, depth and poses for 3D reconstruction.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>PhoneScan uploads captures to a reconstruction server or robot on your local network.</string>
+	<string>Pioneer Home uploads captures to a reconstruction server or robot on your local network.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

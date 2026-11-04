@@ -15,6 +15,7 @@ struct PhoneScanApp: App {
                 .environmentObject(capture)
                 .environmentObject(library)
                 .preferredColorScheme(.dark)
+                .tint(Theme.primaryBright)
         }
     }
 }

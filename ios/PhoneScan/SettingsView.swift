@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @Binding var showOnboarding: Bool
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var capture: CaptureManager
 
@@ -11,37 +12,62 @@ struct SettingsView: View {
     @AppStorage(CaptureSettings.Key.saveDepth) private var saveDepth = true
     @AppStorage(CaptureSettings.Key.saveMesh) private var saveMesh = true
     @AppStorage(CaptureSettings.Key.showMesh) private var showMesh = true
+    @AppStorage(CaptureSettings.Key.showFeaturePoints) private var showFeaturePoints = true
     @AppStorage(CaptureSettings.Key.use4K) private var use4K = false
     @AppStorage(CaptureSettings.Key.serverURL) private var serverURL = "http://192.168.1.100:8765"
+    @AppStorage(CaptureSettings.Key.hidePhotoModeCard) private var hidePhotoModeCard = false
+
+    @State private var showAdvanced = false
+
+    private var currentPreset: CaptureSettings.Preset? {
+        CaptureSettings.Preset.allCases.first {
+            let v = $0.values
+            return v.0 == minTranslationCm && v.1 == minRotationDeg && abs(v.2 - minIntervalSec) < 0.001
+        }
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    sliderRow("Move at least", value: $minTranslationCm, range: 1...30, step: 1, unit: "cm")
-                    sliderRow("…or turn at least", value: $minRotationDeg, range: 1...30, step: 1, unit: "°")
-                    sliderRow("Min time between frames", value: $minIntervalSec, range: 0.05...1.0, step: 0.05, unit: "s")
+                    Picker("Detail", selection: Binding(
+                        get: { currentPreset },
+                        set: { if let p = $0 { apply(p) } }
+                    )) {
+                        ForEach(CaptureSettings.Preset.allCases) { Text($0.rawValue).tag(Optional($0)) }
+                        if currentPreset == nil { Text("Custom").tag(Optional<CaptureSettings.Preset>.none) }
+                    }
+                    .pickerStyle(.segmented)
                 } header: {
-                    Text("Keyframes")
+                    Text("Scan detail")
                 } footer: {
-                    Text("A frame is saved whenever the phone has moved or turned enough. Smaller values give more overlap, which helps SfM and Gaussian splatting.")
-                }
-
-                Section("Image") {
-                    sliderRow("JPEG quality", value: $jpegQuality, range: 0.6...1.0, step: 0.05, unit: "")
-                    Toggle("4K video format (3840×2880)", isOn: $use4K)
+                    Text(currentPreset?.blurb ?? "Custom keyframe spacing: \(Int(minTranslationCm)) cm / \(Int(minRotationDeg))°.")
                 }
 
                 Section {
-                    Toggle("Save LiDAR depth + confidence", isOn: $saveDepth)
-                    Toggle("Save ARKit mesh (mesh.ply)", isOn: $saveMesh)
-                    Toggle("Show live mesh overlay", isOn: $showMesh)
+                    Toggle(isOn: $use4K) {
+                        Label("4K photos", systemImage: "4k.tv")
+                    }
+                } footer: {
+                    Text("3840×2880 instead of 1920×1440. Sharper models, about 4× the storage.")
+                }
+
+                Section {
+                    if capture.supportsMesh {
+                        Toggle(isOn: $showMesh) { Label("Live mesh overlay", systemImage: "square.grid.3x3") }
+                    }
+                    Toggle(isOn: $showFeaturePoints) { Label("Tracking dots", systemImage: "circle.dotted") }
+                    if !capture.hasLiDAR {
+                        Toggle(isOn: Binding(get: { !hidePhotoModeCard }, set: { hidePhotoModeCard = !$0 })) {
+                            Label("Photo mode card", systemImage: "camera.aperture")
+                        }
+                    }
                 } header: {
-                    Text("LiDAR")
+                    Text("While scanning")
                 } footer: {
                     Text(capture.hasLiDAR
-                         ? "This iPhone has LiDAR."
-                         : "This iPhone has no LiDAR (only Pro models do). These options are ignored.")
+                         ? "The mesh shows what's covered. Tracking dots show the points ARKit locks onto."
+                         : "Tracking dots show the points ARKit locks onto. More dots means better tracking.")
                 }
 
                 Section {
@@ -52,14 +78,47 @@ struct SettingsView: View {
                 } header: {
                     Text("Upload server")
                 } footer: {
-                    Text("Run `python3 tools/receive_server.py` on your laptop or the robot's computer, then enter its address. Same Wi-Fi or Tailscale.")
+                    Text("On your computer run `python3 tools/receive_server.py`, then enter its address. Same Wi-Fi or Tailscale.")
+                }
+
+                Section {
+                    Button {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { showOnboarding = true }
+                    } label: {
+                        Label("Show scanning tips", systemImage: "questionmark.circle")
+                    }
+                }
+
+                Section {
+                    DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                        sliderRow("Move at least", value: $minTranslationCm, range: 1...30, step: 1, unit: "cm")
+                        sliderRow("…or turn at least", value: $minRotationDeg, range: 1...30, step: 1, unit: "°")
+                        sliderRow("Min time between frames", value: $minIntervalSec, range: 0.05...1.0, step: 0.05, unit: "s")
+                        sliderRow("JPEG quality", value: $jpegQuality, range: 0.6...1.0, step: 0.05, unit: "")
+                        if capture.hasLiDAR {
+                            Toggle("Save LiDAR depth + confidence", isOn: $saveDepth)
+                            Toggle("Save ARKit mesh (mesh.ply)", isOn: $saveMesh)
+                        }
+                    }
+                } footer: {
+                    Text(capture.hasLiDAR ? "This iPhone has LiDAR." : "This iPhone has no LiDAR (only Pro models do).")
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.navy.ignoresSafeArea())
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
+    }
+
+    private func apply(_ preset: CaptureSettings.Preset) {
+        let v = preset.values
+        minTranslationCm = v.0
+        minRotationDeg = v.1
+        minIntervalSec = v.2
     }
 
     private func sliderRow(_ title: String, value: Binding<Double>, range: ClosedRange<Double>,

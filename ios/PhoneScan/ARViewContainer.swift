@@ -6,6 +6,7 @@ import SwiftUI
 struct ARViewContainer: UIViewRepresentable {
     let session: ARSession
     var showMesh: Bool
+    var showFeaturePoints: Bool = false
 
     func makeUIView(context: Context) -> ARView {
         let view = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
@@ -25,6 +26,11 @@ struct ARViewContainer: UIViewRepresentable {
             view.debugOptions.insert(.showSceneUnderstanding)
         } else {
             view.debugOptions.remove(.showSceneUnderstanding)
+        }
+        if showFeaturePoints {
+            view.debugOptions.insert(.showFeaturePoints)
+        } else {
+            view.debugOptions.remove(.showFeaturePoints)
         }
     }
 }

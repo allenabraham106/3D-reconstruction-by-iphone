@@ -10,6 +10,10 @@ struct CaptureItem: Identifiable, Hashable {
     let hasDepth: Bool
     let hasMesh: Bool
     let isComplete: Bool   // transforms.json written
+    let durationSeconds: Double?
+    let distanceMeters: Double?
+    /// First keyframe, for the thumbnail.
+    let thumbnailURL: URL?
 }
 
 /// Lists captures in Documents/Captures (also visible in the Files app under "On My iPhone → PhoneScan"),
@@ -35,16 +39,22 @@ final class CaptureLibrary: ObservableObject {
         items = dirs.compactMap { url -> CaptureItem? in
             let values = try? url.resourceValues(forKeys: [.creationDateKey, .isDirectoryKey])
             guard values?.isDirectory == true else { return nil }
-            let images = (try? fm.contentsOfDirectory(atPath: url.appendingPathComponent("images").path)) ?? []
+            let images = ((try? fm.contentsOfDirectory(atPath: url.appendingPathComponent("images").path)) ?? [])
+                .filter { $0.hasSuffix(".jpg") }.sorted()
+            let meta = (try? Data(contentsOf: url.appendingPathComponent("metadata.json")))
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             return CaptureItem(
                 url: url,
                 name: url.lastPathComponent,
                 date: values?.creationDate ?? .distantPast,
-                frameCount: images.filter { $0.hasSuffix(".jpg") }.count,
+                frameCount: images.count,
                 sizeBytes: Self.directorySize(url),
                 hasDepth: fm.fileExists(atPath: url.appendingPathComponent("depth").path),
                 hasMesh: fm.fileExists(atPath: url.appendingPathComponent("mesh.ply").path),
-                isComplete: fm.fileExists(atPath: url.appendingPathComponent("transforms.json").path)
+                isComplete: fm.fileExists(atPath: url.appendingPathComponent("transforms.json").path),
+                durationSeconds: meta?["duration_seconds"] as? Double,
+                distanceMeters: meta?["distance_m"] as? Double,
+                thumbnailURL: images.first.map { url.appendingPathComponent("images").appendingPathComponent($0) }
             )
         }
         .sorted { $0.date > $1.date }

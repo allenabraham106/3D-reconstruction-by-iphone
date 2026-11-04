@@ -20,6 +20,52 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var droppedFrames = 0
     @Published var message: String?
 
+    // Live feedback for the capture HUD.
+    /// Keyframe positions seen from above (world x, z), for the mini-map.
+    @Published private(set) var path: [SIMD2<Float>] = []
+    /// Current position and viewing direction seen from above.
+    @Published private(set) var current = SIMD2<Float>(0, 0)
+    @Published private(set) var heading = SIMD2<Float>(0, -1)
+    @Published private(set) var pace: Pace = .good
+    /// How much visual detail ARKit is tracking right now, 0...1 (feature points in view).
+    @Published private(set) var detail: Float = 0
+    @Published private(set) var guidance: Guidance = .start
+    /// Increments on every saved keyframe (drives the shutter flash).
+    @Published private(set) var keyframeTick = 0
+    /// Increments when tracking degrades while recording (drives a warning haptic).
+    @Published private(set) var warningTick = 0
+
+    enum Pace { case good, fast }
+
+    enum Guidance: Equatable {
+        case start, keepGoing, sweep, lowDetail, tooFast, relocalizing, headBack, loopClosed
+        var text: String {
+            switch self {
+            case .start: return "Pan slowly across the room to begin"
+            case .keepGoing: return "Looking good: keep walking slowly"
+            case .sweep: return "Tilt up and down to catch floor and ceiling edges"
+            case .lowDetail: return "Low detail here: aim at furniture or textured areas"
+            case .tooFast: return "Too fast: slow down"
+            case .relocalizing: return "Lost track: go back to where you just were"
+            case .headBack: return "Head back to your start point to close the loop"
+            case .loopClosed: return "Loop closed: you can stop, or keep scanning"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .start: return "hand.point.up.left"
+            case .keepGoing: return "checkmark.circle"
+            case .sweep: return "arrow.up.and.down"
+            case .lowDetail: return "eye.trianglebadge.exclamationmark"
+            case .tooFast: return "tortoise"
+            case .relocalizing: return "arrow.uturn.backward"
+            case .headBack: return "arrow.triangle.turn.up.right.circle"
+            case .loopClosed: return "checkmark.seal"
+            }
+        }
+        var isWarning: Bool { [.lowDetail, .tooFast, .relocalizing].contains(self) }
+    }
+
     let hasLiDAR = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
     let supportsMesh = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
 
@@ -31,6 +77,11 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
     private var distanceAccum: Float = 0
     private var startDate = Date()
     private var sessionRunning = false
+    private var paceSamples: [(t: TimeInterval, p: SIMD3<Float>, q: simd_quatf)] = []
+    private var pitchMin: Float = 0
+    private var pitchMax: Float = 0
+    private var maxDistanceFromStart: Float = 0
+    private var lastHUDUpdate: TimeInterval = 0
 
     override init() {
         super.init()
@@ -104,6 +155,12 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
         frameCount = 0
         droppedFrames = 0
         elapsedSeconds = 0
+        path = []
+        paceSamples = []
+        pitchMin = 0; pitchMax = 0
+        maxDistanceFromStart = 0
+        pace = .good
+        guidance = .start
         startDate = Date()
         isRecording = true
         UIApplication.shared.isIdleTimerDisabled = true
@@ -123,7 +180,7 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
 
-        writer.finish(mesh: mesh) { [weak self] result in
+        writer.finish(mesh: mesh, distance: distanceAccum) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isFinishing = false
@@ -160,6 +217,7 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
         }
         if let last = lastPosition { distanceAccum += simd_distance(last, position) }
         lastPosition = position
+        updateHUD(frame: frame, pose: pose, position: position)
 
         guard isKeyframe(pose: pose, time: frame.timestamp) else { return }
 
@@ -174,6 +232,8 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
         writer.add(frame: frame)
         frameCount = writer.frameCount
         distanceMeters = distanceAccum
+        path.append(SIMD2(position.x, position.z))
+        keyframeTick &+= 1
     }
 
     func session(_ session: ARSession, didFailWithError error: Error) {
@@ -191,6 +251,72 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool { true }
+
+    // MARK: HUD
+
+    /// Pace, detail, mini-map and guidance. Runs every frame but publishes at most 10 times a second.
+    private func updateHUD(frame: ARFrame, pose: simd_float4x4, position: SIMD3<Float>) {
+        let t = frame.timestamp
+        let q = simd_quatf(pose)
+        paceSamples.append((t, position, q))
+        paceSamples.removeAll { t - $0.t > 1.0 }
+
+        let forward = -SIMD3<Float>(pose.columns.2.x, pose.columns.2.y, pose.columns.2.z)
+        let pitch = asin(max(-1, min(1, forward.y)))
+        pitchMin = min(pitchMin, pitch); pitchMax = max(pitchMax, pitch)
+        if let start = path.first {
+            maxDistanceFromStart = max(maxDistanceFromStart, simd_distance(start, SIMD2(position.x, position.z)))
+        }
+
+        guard t - lastHUDUpdate >= 0.1 else { return }
+        lastHUDUpdate = t
+
+        current = SIMD2(position.x, position.z)
+        let flat = SIMD2(forward.x, forward.z)
+        if simd_length(flat) > 0.1 { heading = simd_normalize(flat) }
+
+        // Speed over the last second: walking > 0.6 m/s or turning > 70°/s blurs frames.
+        var newPace = Pace.good
+        if let first = paceSamples.first, t - first.t > 0.3 {
+            let dt = Float(t - first.t)
+            let speed = simd_distance(first.p, position) / dt
+            let rel = first.q.inverse * q
+            let turn = 2 * acos(min(1, abs(rel.real))) / dt
+            if speed > 0.6 || turn > 70 * .pi / 180 { newPace = .fast }
+        }
+        if newPace != pace { pace = newPace }
+
+        // ~400 tracked feature points in view is plenty for ARKit and SfM.
+        let points = Float(frame.rawFeaturePoints?.points.count ?? 0)
+        let newDetail = min(1, points / 400)
+        if abs(newDetail - detail) > 0.03 { detail = newDetail }
+
+        let next = nextGuidance(state: frame.camera.trackingState, position: position)
+        if next != guidance {
+            if next.isWarning && !guidance.isWarning { warningTick &+= 1 }
+            guidance = next
+        }
+    }
+
+    private func nextGuidance(state: ARCamera.TrackingState, position: SIMD3<Float>) -> Guidance {
+        if case .limited(let reason) = state {
+            switch reason {
+            case .excessiveMotion: return .tooFast
+            case .insufficientFeatures: return .lowDetail
+            case .relocalizing: return .relocalizing
+            default: return .start
+            }
+        }
+        if pace == .fast { return .tooFast }
+        if detail < 0.15 && frameCount > 3 { return .lowDetail }
+        if frameCount < 8 { return .start }
+        if pitchMax - pitchMin < 0.6 && frameCount > 25 { return .sweep }
+        if let start = path.first, maxDistanceFromStart > 1.5, elapsedSeconds > 45 {
+            let here = simd_distance(start, SIMD2(position.x, position.z))
+            return here < 0.6 ? .loopClosed : .headBack
+        }
+        return .keepGoing
+    }
 
     // MARK: Helpers
 
