@@ -455,11 +455,18 @@ def merge_depths(A, B, rel_tol=0.02):
 
 
 def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_frac=0.0015,
-            rel_tol=0.015, min_agree=2, max_views=None, n_partners=2, extra_sparse=(),
-            method="sweep", temporal_sources=False):
+            rel_tol=None, min_agree=None, max_views=None, n_partners=2, extra_sparse=(),
+            method="sweep", temporal_sources=True):
     """extra_sparse: sub-models already aligned into the main model's frame (see
     sfm.attach_submodels); their frames that the main model lacks are added as views."""
     t0 = time.time()
+    # Agreement rule: depth kept only if >= min_agree neighbour views agree within
+    # rel_tol. A looser 2%/1-view rule tripled coverage on the real walk-through but
+    # also let reflections and haze through (obstacle cells 8k -> 20k), so strict it is.
+    if rel_tol is None:
+        rel_tol = 0.015
+    if min_agree is None:
+        min_agree = 2
     out_dir.mkdir(parents=True, exist_ok=True)
     rec = pycolmap.Reconstruction(str(sparse_dir))
     imgs = sorted([im for im in rec.images.values() if im.has_pose], key=lambda im: im.name)
