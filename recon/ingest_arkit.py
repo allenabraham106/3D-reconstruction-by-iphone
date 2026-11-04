@@ -21,27 +21,33 @@ from mvs import remove_outliers, voxel_downsample, write_ply
 FLIP = np.diag([1.0, -1.0, -1.0])
 
 
-def load_transforms_json(cap: Path):
-    """nerfstudio-style transforms.json (c2w in OpenGL axes == ARKit camera axes, metres)."""
-    j = json.loads((cap / "transforms.json").read_text())
-    out = []
-    for i, f in enumerate(j["frames"]):
-        g = lambda k, d=None: f.get(k, j.get(k, d))
-        w, h = int(g("w")), int(g("h"))
-        K = np.array([[g("fl_x"), 0, g("cx", w / 2)], [0, g("fl_y", g("fl_x")), g("cy", h / 2)], [0, 0, 1.0]])
-        T = np.array(f["transform_matrix"], dtype=np.float64)  # row-major 4x4
-        Rwc = T[:3, :3] @ FLIP
-        C = T[:3, 3]
-        R = Rwc.T
-        e = {"index": i, "rgb": f["file_path"], "width": w, "height": h,
-             "K": K, "R": R, "t": -R @ C, "C": C}
-        if f.get("depth_file_path"):
-            e["depth"] = f["depth_file_path"]
-        conf = f.get("confidence_file_path") or f.get("confidence_path")
-        if conf:
-            e["confidence"] = conf
-        out.append(e)
-    return out
+def _parse_nerfstudio_frame(i, f, top):
+    """One frame in nerfstudio / PhoneScan style (c2w row-major, OpenGL == ARKit camera axes)."""
+    g = lambda k, d=None: f.get(k, top.get(k, d))
+    w, h = int(g("w")), int(g("h"))
+    K = np.array([[g("fl_x"), 0, g("cx", w / 2)], [0, g("fl_y", g("fl_x")), g("cy", h / 2)], [0, 0, 1.0]])
+    T = np.array(f["transform_matrix"], dtype=np.float64)
+    Rwc = T[:3, :3] @ FLIP
+    C = T[:3, 3]
+    R = Rwc.T
+    e = {"index": i, "rgb": f["file_path"], "width": w, "height": h,
+         "K": K, "R": R, "t": -R @ C, "C": C}
+    if f.get("depth_file_path"):
+        e["depth"] = f["depth_file_path"]
+    conf = f.get("confidence_file_path") or f.get("confidence_path")
+    if conf:
+        e["confidence"] = conf
+    return e
+
+
+def _parse_scancapture_frame(f):
+    """One frame in ScanCapture style (column-major ARKit matrices)."""
+    T = np.array(f["world_from_camera"], dtype=np.float64).reshape(4, 4).T
+    K = np.array(f["intrinsics"], dtype=np.float64).reshape(3, 3).T
+    Rwc = T[:3, :3] @ FLIP  # world_from_cvcam rotation
+    C = T[:3, 3]
+    R = Rwc.T  # cam_from_world
+    return {**f, "R": R, "t": -R @ C, "C": C, "K": K}
 
 
 def read_depth(cap: Path, f):
@@ -64,18 +70,22 @@ def read_depth(cap: Path, f):
 
 
 def load_capture(cap: Path):
-    if (cap / "transforms.json").exists() and not (cap / "frames.jsonl").exists():
-        return load_transforms_json(cap)
-    frames = [json.loads(l) for l in (cap / "frames.jsonl").read_text().splitlines() if l.strip()]
+    """Read ScanCapture (frames.jsonl) or PhoneScan / nerfstudio (transforms.json) captures.
+
+    transforms.json wins when present. A crash-interrupted PhoneScan capture may only have
+    frames.jsonl, so each jsonl line is parsed by whichever schema its keys match.
+    """
+    if (cap / "transforms.json").exists():
+        j = json.loads((cap / "transforms.json").read_text())
+        return [_parse_nerfstudio_frame(i, f, j) for i, f in enumerate(j["frames"])]
     out = []
-    for f in frames:
-        T = np.array(f["world_from_camera"], dtype=np.float64).reshape(4, 4).T  # column-major
-        K = np.array(f["intrinsics"], dtype=np.float64).reshape(3, 3).T
-        Rwc = T[:3, :3] @ FLIP  # world_from_cvcam rotation
-        C = T[:3, 3]
-        R = Rwc.T  # cam_from_world
-        t = -R @ C
-        out.append({**f, "R": R, "t": t, "C": C, "K": K})
+    for i, line in enumerate(l for l in (cap / "frames.jsonl").read_text().splitlines() if l.strip()):
+        try:
+            f = json.loads(line)
+        except json.JSONDecodeError:  # last line cut off by a crash
+            continue
+        out.append(_parse_nerfstudio_frame(i, f, {}) if "transform_matrix" in f
+                   else _parse_scancapture_frame(f))
     return out
 
 
@@ -133,7 +143,7 @@ def sfm_aligned(cap: Path, frames, out: Path):
     from robot_map import read_ply
     from sfm import run_sfm
     import pycolmap
-    img_dir = cap / "rgb"
+    img_dir = cap / Path(frames[0]["rgb"]).parent  # rgb/ (ScanCapture) or images/ (PhoneScan)
     run_sfm(img_dir, out / "sfm")
     P, C, views = run_mvs(out / "sfm" / "sparse_best", img_dir, out / "mvs")
     by_name = {Path(f["rgb"]).name: f for f in frames}
