@@ -526,6 +526,42 @@ def mls_smooth(P, k=16, max_shift_frac=0.5, iters=1):
     return Q
 
 
+# ---------------------------------------------------------------- parallel plane sweep
+_SWEEP = {}  # state shared with worker threads
+
+
+def _sweep_worker(job):
+    i, src_idx, kw = job
+    views = _SWEEP["views"]
+    D = planesweep_multiscale(views[i], [views[k] for k in src_idx], up_world=_SWEEP["up"],
+                              clahe=True, wall_normals=_SWEEP["walls"], **kw)
+    return i, D
+
+
+def _run_sweep_jobs(views, jobs, up_world, wall_normals, workers=None):
+    """Yield (view index, depth) for each job, `workers` frames at a time (threads).
+
+    Threads, not processes: OpenCV/numpy release the GIL in the heavy warps, filters and
+    array maths, and forking after OpenCV has started its thread pool deadlocks the
+    children (seen in testing). Each worker runs OpenCV single-threaded."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    workers = workers or max(1, (os.cpu_count() or 1))
+    _SWEEP.update(views=views, up=up_world, walls=wall_normals)
+    if workers <= 1 or len(jobs) < 2:
+        for j in jobs:
+            yield _sweep_worker(j)
+        return
+    prev = cv2.getNumThreads()
+    cv2.setNumThreads(1)
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for res in ex.map(_sweep_worker, jobs):
+                yield res
+    finally:
+        cv2.setNumThreads(prev)
+
+
 def is_dark(view, thresh=70):
     """Mean grey level below thresh (0-255): low light -> noisier matching."""
     if thresh is None or thresh <= 0:
@@ -551,7 +587,8 @@ def merge_depths(A, B, rel_tol=0.02):
 def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_frac=0.0015,
             rel_tol=None, min_agree=None, max_views=None, n_partners=2, extra_sparse=(),
             method="sweep", temporal_sources=True, walls=False, fusion="tsdf",
-            tsdf_voxel_frac=0.0022, cache_depth=False, dark_thresh=70, dense_every=1):
+            tsdf_voxel_frac=0.0022, cache_depth=False, dark_thresh=None, dense_every=1,
+            workers=None):
     """extra_sparse: sub-models already aligned into the main model's frame (see
     sfm.attach_submodels); their frames that the main model lacks are added as views."""
     t0 = time.time()
@@ -595,18 +632,28 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
     wall_normals = dominant_wall_normals(rec, up_world) if (walls and up_world is not None) else None
     if wall_normals:
         print(f"[mvs] wall directions (Manhattan) estimated from sparse points", flush=True)
-    for i, v in enumerate(views):
-        if dense_every > 1 and order.get(v.id, 0) % dense_every:
-            continue  # video neighbours overlap heavily: depth for every k-th frame only,
-            # the skipped ones still serve as stereo sources and consistency checks
-        if method == "sweep":  # plane sweep: any camera motion, incl. walking forward
+    # plane-sweep jobs: (view index, source indices, extra kwargs)
+    index = {v.id: k for k, v in enumerate(views)}
+    jobs = []
+    if method == "sweep":
+        for i, v in enumerate(views):
+            if dense_every > 1 and order.get(v.id, 0) % dense_every:
+                continue  # video neighbours overlap heavily: depth for every k-th frame only,
+                # the skipped ones still serve as stereo sources and consistency checks
             srcs = sweep_sources(v, by_tag, order, stereo, med) if temporal_sources else \
                 (stereo.get(v.id, [])[:3] or neigh.get(v.id, [])[:3])
             if srcs:  # fronto + ground planes, fine->coarse, local-contrast boost
-                dark = is_dark(v, dark_thresh)
-                extra_kw = dict(win=5, min_std=1.0) if dark else {}
-                v.depth = planesweep_multiscale(v, srcs, up_world=up_world, clahe=True,
-                                                wall_normals=wall_normals, **extra_kw)
+                extra_kw = dict(win=5, min_std=1.0) if is_dark(v, dark_thresh) else {}
+                jobs.append((i, [index[u.id] for u in srcs], extra_kw))
+        for done, (i, D) in enumerate(_run_sweep_jobs(views, jobs, up_world, wall_normals, workers)):
+            views[i].depth = D
+            if done % 25 == 0:
+                cov = (D > 0).mean()
+                print(f"[mvs] stereo {done+1}/{len(jobs)} coverage={cov:.2f} {time.time()-t0:.0f}s",
+                      flush=True)
+    for i, v in enumerate(views):
+        if method == "sweep":
+            continue
         else:  # rectified SGBM: fast, but only for sideways / orbiting motion
             got = 0
             for partner in stereo.get(v.id, []):
@@ -630,9 +677,10 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
         if v.depth is None or getattr(v, "depth_only_support", False):
             continue  # overlap copies only serve as partners for a sub-model's new frames
         if method == "sweep" and is_dark(v, dark_thresh):
-            # dark frames: bigger windows above, and a looser agreement rule here --
-            # measured on the real dark corner: 4.1% -> 14.8% trusted depth, no extra
-            # smear; TSDF free-space carving cleans what slips through
+            # dark frames (opt-in, dark_thresh=70): bigger windows above, looser agreement
+            # here. On the apartment's dark corner alone: 4.1% -> 14.8% trusted depth; but
+            # on the full TSDF map it added ~1% mesh and slightly hurt the robot map
+            # (floor cells seen 6199 -> 5452), so it is off by default.
             m = consistency_mask(v, neigh.get(v.id, []), 0.02, 1)
         else:
             m = consistency_mask(v, neigh.get(v.id, []), rel_tol, min_agree)
