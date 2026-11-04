@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scene Reconstruction Viewer</title>
+<style>
+  :root { --bg:#1d1e22; --fg:#e8e8ea; --muted:#9a9ba3; --panel:rgba(20,21,25,.78); --accent:#7cc4ff; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
+  canvas { display:block; touch-action:none; }
+  #hud { position:fixed; left:16px; top:16px; right:16px; max-width:360px; background:var(--panel);
+    border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); }
+  #hud h1 { font-size:15px; margin:0 0 4px; }
+  #hud p { margin:0 0 8px; color:var(--muted); font-size:12px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px; }
+  button, label { background:#2b2d33; color:var(--fg); border:1px solid #3a3c44; border-radius:6px;
+    padding:6px 10px; font:inherit; font-size:12px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  input[type=range] { width:110px; }
+  #drop { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(29,30,34,.9); font-size:18px; border:3px dashed var(--accent); }
+  #status { font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>Scene Reconstruction</h1>
+  <p id="status">Loading…</p>
+  <div class="row">
+    <button id="play">Pause</button>
+    <button id="follow">Follow camera</button>
+    <button id="allcams">All cameras</button>
+    <label>Point size <input id="psize" type="range" min="0.5" max="6" step="0.1" value="2"></label>
+  </div>
+  <div class="row"><label>Open .ply / cameras.json <input id="file" type="file" multiple accept=".ply,.json" hidden></label></div>
+</div>
+<div id="drop">Drop dense.ply (+ cameras.json)</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three.module.js",
+  "three/addons/": "./vendor/addons/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x1d1e22);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.01, 1000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+const statusEl = document.getElementById("status");
+const root = new THREE.Group(); scene.add(root);   // world (gravity-aligned)
+
+// ---------- binary PLY (x,y,z float + r,g,b uchar) ----------
+function parsePLY(buf) {
+  const head = new TextDecoder().decode(new Uint8Array(buf, 0, Math.min(4096, buf.byteLength)));
+  const end = head.indexOf("end_header\n") + "end_header\n".length;
+  const n = parseInt(/element vertex (\d+)/.exec(head)[1]);
+  const props = [...head.slice(0, end).matchAll(/property (\w+) (\w+)/g)].map(m => [m[1], m[2]]);
+  const size = { float: 4, float32: 4, uchar: 1, uint8: 1, double: 8 };
+  const stride = props.reduce((s, p) => s + size[p[0]], 0);
+  const dv = new DataView(buf, end);
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  const off = {}; let o = 0; for (const [t, name] of props) { off[name] = [o, t]; o += size[t]; }
+  const rd = (b, [o, t]) => t.startsWith("float") ? dv.getFloat32(b + o, true) :
+                            t === "double" ? dv.getFloat64(b + o, true) : dv.getUint8(b + o);
+  for (let i = 0; i < n; i++) {
+    const b = i * stride;
+    pos[3*i] = rd(b, off.x); pos[3*i+1] = rd(b, off.y); pos[3*i+2] = rd(b, off.z);
+    if (off.red) { col[3*i] = rd(b, off.red)/255; col[3*i+1] = rd(b, off.green)/255; col[3*i+2] = rd(b, off.blue)/255; }
+    else col.fill(0.8, 3*i, 3*i+3);
+  }
+  return { pos, col, n };
+}
+
+let points, cams = [], frustums, traj, liveFrustum, trail, center = new THREE.Vector3(), radius = 1;
+const pointMat = new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true });
+
+function setPLY(p) {
+  if (points) root.remove(points);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(p.pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
+  g.computeBoundingSphere();
+  points = new THREE.Points(g, pointMat); root.add(points);
+  statusEl.textContent = `${p.n.toLocaleString()} points` + (cams.length ? ` · ${cams.length} cameras` : "");
+  frame();
+}
+
+// COLMAP cameras: x right, y down, z forward. Up in world ≈ mean of -R[1].
+function setCams(list) {
+  cams = list.map(c => ({ ...c, C: new THREE.Vector3(...c.C), R: c.R }));
+  const up = new THREE.Vector3();
+  cams.forEach(c => up.add(new THREE.Vector3(-c.R[1][0], -c.R[1][1], -c.R[1][2])));
+  up.normalize();
+  root.quaternion.setFromUnitVectors(up, new THREE.Vector3(0, 1, 0));
+  [frustums, traj, liveFrustum, trail].forEach(o => o && root.remove(o));
+  const depth = estimateScale() * 0.06;
+  const segs = []; cams.forEach(c => segs.push(...frustumLines(c, depth)));
+  frustums = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs),
+    new THREE.LineBasicMaterial({ color: 0x7cc4ff, transparent: true, opacity: 0.35 }));
+  frustums.visible = false; root.add(frustums);
+  traj = new THREE.Line(new THREE.BufferGeometry().setFromPoints(cams.map(c => c.C)),
+    new THREE.LineBasicMaterial({ color: 0x5aa9ff, transparent: true, opacity: 0.5 }));
+  root.add(traj);
+  liveFrustum = new THREE.LineSegments(new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0xffffff }));
+  liveFrustum.userData.depth = depth * 2.2;
+  root.add(liveFrustum);
+  trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffffff }));
+  root.add(trail);
+  if (points) statusEl.textContent = `${points.geometry.attributes.position.count.toLocaleString()} points · ${cams.length} cameras`;
+  frame();
+}
+function estimateScale() {
+  const b = new THREE.Box3(); cams.forEach(c => b.expandByPoint(c.C));
+  return Math.max(b.getSize(new THREE.Vector3()).length(), 1e-3);
+}
+function frustumLines(c, d) {
+  const R = c.R, ax = (i) => new THREE.Vector3(R[i][0], R[i][1], R[i][2]); // camera axes in world
+  const X = ax(0), Y = ax(1), Z = ax(2);
+  const hw = d * c.w / (2 * c.fx), hh = d * c.h / (2 * c.fy);
+  const corner = (sx, sy) => c.C.clone().addScaledVector(Z, d).addScaledVector(X, sx*hw).addScaledVector(Y, sy*hh);
+  const k = [corner(-1,-1), corner(1,-1), corner(1,1), corner(-1,1)];
+  return [c.C,k[0], c.C,k[1], c.C,k[2], c.C,k[3], k[0],k[1], k[1],k[2], k[2],k[3], k[3],k[0]];
+}
+function frame() {
+  const target = points ? points.geometry.boundingSphere : null;
+  const box = new THREE.Box3();
+  if (cams.length) cams.forEach(c => box.expandByPoint(c.C.clone().applyQuaternion(root.quaternion)));
+  else if (target) box.setFromCenterAndSize(target.center, new THREE.Vector3(1,1,1).multiplyScalar(target.radius));
+  box.getCenter(center); radius = Math.max(box.getSize(new THREE.Vector3()).length(), 0.5);
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(0.35, 1.1, 0.75).multiplyScalar(radius * 1.1));
+  camera.near = radius / 500; camera.far = radius * 50; camera.updateProjectionMatrix();
+}
+
+// ---------- animation: camera flies along the capture path ----------
+let playing = true, follow = false, t = 0;
+document.getElementById("play").onclick = (e) => { playing = !playing; e.target.textContent = playing ? "Pause" : "Play"; };
+document.getElementById("follow").onclick = (e) => { follow = !follow; e.target.style.borderColor = follow ? "#7cc4ff" : ""; if (!follow) frame(); };
+document.getElementById("allcams").onclick = () => { if (frustums) frustums.visible = !frustums.visible; };
+document.getElementById("psize").oninput = (e) => pointMat.size = +e.target.value;
+
+function tick(dt) {
+  if (!cams.length) return;
+  if (playing) t = (t + dt * 6) % cams.length;   // ~6 frames/s along the path
+  const i = Math.floor(t), c = cams[i];
+  liveFrustum.geometry.setFromPoints(frustumLines(c, liveFrustum.userData.depth));
+  trail.geometry.setFromPoints(cams.slice(Math.max(0, i - 40), i + 1).map(k => k.C));
+  if (follow) {
+    const Z = new THREE.Vector3(...c.R[2]).applyQuaternion(root.quaternion);
+    const Cw = c.C.clone().applyQuaternion(root.quaternion);
+    camera.position.lerp(Cw.clone().addScaledVector(Z, -radius * 0.08).add(new THREE.Vector3(0, radius*0.05, 0)), 0.1);
+    controls.target.lerp(Cw.clone().addScaledVector(Z, radius * 0.2), 0.1);
+  }
+}
+let last = performance.now();
+renderer.setAnimationLoop((now) => { tick((now - last) / 1000); last = now; controls.update(); renderer.render(scene, camera); });
+
+// ---------- loading: ?ply=..&cams=.. , defaults, file picker, drag-drop ----------
+async function loadFiles(files) {
+  for (const f of files) {
+    if (f.name.endsWith(".json")) setCams(JSON.parse(await f.text()));
+    else if (f.name.endsWith(".ply")) setPLY(parsePLY(await f.arrayBuffer()));
+  }
+}
+document.getElementById("file").onchange = (e) => loadFiles([...e.target.files].sort((a,b)=>a.name.endsWith(".json")?-1:1));
+const drop = document.getElementById("drop");
+addEventListener("dragover", (e) => { e.preventDefault(); drop.style.display = "flex"; });
+addEventListener("dragleave", () => drop.style.display = "none");
+addEventListener("drop", (e) => { e.preventDefault(); drop.style.display = "none";
+  loadFiles([...e.dataTransfer.files].sort((a,b)=>a.name.endsWith(".json")?-1:1)); });
+const q = new URLSearchParams(location.search);
+const plyURL = q.get("ply") || "dense.ply", camURL = q.get("cams") || "cameras.json";
+try { const r = await fetch(camURL); if (r.ok) setCams(await r.json()); } catch {}
+try { const r = await fetch(plyURL); if (r.ok) setPLY(parsePLY(await r.arrayBuffer()));
+      else statusEl.textContent = "Open or drop dense.ply + cameras.json"; }
+catch { statusEl.textContent = "Open or drop dense.ply + cameras.json"; }
+window.__ready = true;
+</script>
+</body>
+</html>
