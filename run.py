@@ -71,6 +71,8 @@ def main():
     shutil.copy(out / "robot" / "map_metric.ply", vdir / "dense.ply")
     shutil.copy(out / "robot" / "cameras_metric.json", vdir / "cameras.json")
     (vdir / "view.json").write_text('{"up": [0, 0, 1]}')  # robot map is z-up
+    if (out / "robot" / "mesh_metric.ply").exists():  # TSDF surface, shown by default
+        shutil.copy(out / "robot" / "mesh_metric.ply", vdir / "mesh.ply")
     if (out / "robot" / "inferred_floor.ply").exists():  # imagined floor, toggled in viewer
         shutil.copy(out / "robot" / "inferred_floor.ply", vdir / "inferred_floor.ply")
     print(f"\nDone in {time.time()-t0:.0f}s.\n  View:  cd {vdir} && python3 -m http.server 8000"
