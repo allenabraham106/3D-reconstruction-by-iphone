@@ -227,8 +227,21 @@ def write_ply(path, P, C):
         fh.write(rec.tobytes())
 
 
+def merge_depths(A, B, rel_tol=0.02):
+    """Fill A's holes from B; where both have depth but disagree, trust neither."""
+    out = A.copy()
+    fill = (A <= 0) & (B > 0)
+    out[fill] = B[fill]
+    both = (A > 0) & (B > 0)
+    conflict = both & (np.abs(A - B) > rel_tol * A)
+    out[conflict] = 0
+    agree = both & ~conflict
+    out[agree] = 0.5 * (A[agree] + B[agree])
+    return out
+
+
 def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_frac=0.0015,
-            rel_tol=0.015, min_agree=2, max_views=None):
+            rel_tol=0.015, min_agree=2, max_views=None, n_partners=2):
     t0 = time.time()
     out_dir.mkdir(parents=True, exist_ok=True)
     rec = pycolmap.Reconstruction(str(sparse_dir))
@@ -239,21 +252,29 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
     print(f"[mvs] {len(views)} views loaded {time.time()-t0:.0f}s", flush=True)
     stereo, neigh, med = choose_partners(views, rec)
     for i, v in enumerate(views):
+        got = 0
         for partner in stereo.get(v.id, []):
-            v.depth = stereo_depth(v, partner, rec)
-            if v.depth is not None and (v.depth > 0).mean() > 0.05:
+            D = stereo_depth(v, partner, rec)
+            if D is None or (D > 0).mean() < 0.05:
+                continue
+            v.depth = D if v.depth is None else merge_depths(v.depth, D)
+            got += 1
+            if got >= n_partners:
                 break
         if i % 25 == 0:
             cov = 0 if v.depth is None else (v.depth > 0).mean()
             print(f"[mvs] stereo {i+1}/{len(views)} coverage={cov:.2f} {time.time()-t0:.0f}s", flush=True)
-    allP, allC = [], []
+    allP, allC, cov_raw, cov_fused = [], [], [], []
     for v in views:
         if v.depth is None:
             continue
         m = consistency_mask(v, neigh.get(v.id, []), rel_tol, min_agree)
+        cov_raw.append((v.depth > 0).mean()); cov_fused.append(m.mean())
         P, C = backproject(v, v.depth, m)
         allP.append(P); allC.append(C)
     P = np.concatenate(allP); C = np.concatenate(allC)
+    print(f"[mvs] per-view coverage: stereo median {np.median(cov_raw):.2f}, "
+          f"after consistency median {np.median(cov_fused):.2f}", flush=True)
     print(f"[mvs] fused raw points: {len(P):,} {time.time()-t0:.0f}s", flush=True)
     # scene-relative voxel size
     extent = np.linalg.norm(np.percentile(P, 98, 0) - np.percentile(P, 2, 0))

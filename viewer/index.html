@@ -100,10 +100,12 @@ function setPLY(p) {
 }
 
 // COLMAP cameras: x right, y down, z forward. Up in world ≈ mean of -R[1].
+let knownUp = null;  // from view.json when the map is already gravity-aligned
 function setCams(list) {
   cams = list.map(c => ({ ...c, C: new THREE.Vector3(...c.C), R: c.R }));
   const up = new THREE.Vector3();
-  cams.forEach(c => up.add(new THREE.Vector3(-c.R[1][0], -c.R[1][1], -c.R[1][2])));
+  if (knownUp) up.set(...knownUp);
+  else cams.forEach(c => up.add(new THREE.Vector3(-c.R[1][0], -c.R[1][1], -c.R[1][2])));
   up.normalize();
   root.quaternion.setFromUnitVectors(up, new THREE.Vector3(0, 1, 0));
   [frustums, traj, liveFrustum, trail].forEach(o => o && root.remove(o));
@@ -185,6 +187,7 @@ addEventListener("drop", (e) => { e.preventDefault(); drop.style.display = "none
   loadFiles([...e.dataTransfer.files].sort((a,b)=>a.name.endsWith(".json")?-1:1)); });
 const q = new URLSearchParams(location.search);
 const plyURL = q.get("ply") || "dense.ply", camURL = q.get("cams") || "cameras.json";
+try { const r = await fetch("view.json"); if (r.ok) knownUp = (await r.json()).up || null; } catch {}
 try { const r = await fetch(camURL); if (r.ok) setCams(await r.json()); } catch {}
 try { const r = await fetch(plyURL); if (r.ok) setPLY(parsePLY(await r.arrayBuffer()));
       else statusEl.textContent = "Open or drop dense.ply + cameras.json"; }

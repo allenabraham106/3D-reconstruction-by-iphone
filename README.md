@@ -10,15 +10,15 @@ This reproduces the kind of result in the NVIDIA-stack demo (ViPE-style pose and
 
 ## Two ways to capture
 
-| | **A. Any video** (Camera app) | **B. ScanCapture app** (in `ios/`) — recommended for robots |
+| | **A. Any video** (Camera app) | **B. PhoneScan app** (`ios/PhoneScan.xcodeproj`) — recommended for robots |
 |---|---|---|
 | What you record | `.MOV` (HEVC, HDR OK, any orientation) | RGB + ARKit 6-DoF pose + intrinsics (+ LiDAR depth on Pro models) |
 | Scale | estimated from phone height above the floor (`--phone-height`, default 1.4 m) | **true metric** from ARKit |
 | Gravity | estimated (camera orientation + floor plane) | **exact** (ARKit gravity) |
 | Processing | SfM + dense stereo, ~5–10 min on CPU | LiDAR: **~20 s**; no LiDAR: SfM + stereo, then aligned to ARKit |
-| Command | `python run.py IMG_1234.MOV` | `python run.py scan_20261104_101500/ --arkit` |
+| Command | `python run.py IMG_1234.MOV` | `python run.py captures/<scan>/ --arkit` |
 
-iPhone 17 Pro / Pro Max have LiDAR. The base iPhone 17 and iPhone Air don't; the app detects this and still records ARKit poses.
+iPhone 17 Pro / Pro Max have LiDAR. The base iPhone 17 and iPhone Air don't. On those, the app still records ARKit poses, and the pipeline runs SfM + stereo, then snaps the result to the ARKit trajectory for real metres and gravity (tested below).
 
 ## Quick start
 
@@ -60,14 +60,14 @@ iPhone video ─► frames.py ─► sfm.py ─────────► mvs.p
                              incremental BA     multi-view consistency  occupancy grid
                                                 fusion
 
-ScanCapture app ─► ingest_arkit.py ─► (LiDAR) fuse depth with ARKit poses ─► robot_map.py --metric
+PhoneScan app ──► ingest_arkit.py ─► (LiDAR) fuse depth with ARKit poses ─► robot_map.py --metric
                                      (no LiDAR) sfm + mvs, Sim(3)-align to ARKit trajectory
 ```
 
-1. **`recon/frames.py`** samples the video at about 4× the target keyframe count and keeps the sharpest frame in each window (variance of Laplacian), which drops motion-blurred frames. HLG / Dolby Vision HDR is tone-mapped to SDR (iPhones record HDR by default), the rotation flag is applied, and frames are downscaled to 1280 px.
-2. **`recon/sfm.py`** runs COLMAP via pycolmap: SIFT features with one shared camera (one lens), sequential matching with quadratic overlap (suited to video), and incremental mapping with bundle adjustment. Outputs are camera poses, intrinsics and lens distortion, and sparse points.
-3. **`recon/mvs.py`** produces dense depth on CPU. For each frame it picks the stereo partner with the best baseline-to-depth ratio (about 0.07), small rotation and many shared points. It undistorts, rectifies from the SfM poses (vertical layouts are transposed, mirrored layouts are flipped), and runs OpenCV semi-global matching with a left-right consistency check. The disparity range comes from the SfM depths. Each depth pixel is kept only if it **agrees within 1.5% with at least 2 neighboring views' depth maps**. The survivors are back-projected, voxel-averaged, and cleaned with statistical outlier removal.
-4. **`recon/robot_map.py`** finds the floor with RANSAC (the largest plane roughly perpendicular to gravity, below the cameras), rotates it to Z=0, and sets metric scale. It then writes the nav2 occupancy grid and voxel map.
+1. **`recon/frames.py`** samples the video at about 4× the target keyframe count and keeps the sharpest frame in each window (variance of Laplacian), which drops motion-blurred frames. It also drops near-duplicate frames, from moments when the phone was held still; they add no viewpoint and were splitting SfM into pieces. HLG / Dolby Vision HDR is tone-mapped to SDR (iPhones record HDR by default), the rotation flag is applied, and frames are downscaled to 1280 px.
+2. **`recon/sfm.py`** runs COLMAP via pycolmap: SIFT features with one shared camera (one lens), sequential matching with quadratic overlap (suited to video), and incremental mapping with bundle adjustment. If fewer than 90% of frames register, it adds exhaustive matching (every pair) so revisited places can link the pieces, then maps again. Outputs are camera poses, intrinsics and lens distortion, and sparse points.
+3. **`recon/mvs.py`** produces dense depth on CPU. For each frame it picks the **two** best stereo partners (baseline-to-depth ratio about 0.07, small rotation, many shared points) and merges their depth: each fills the other's holes, and pixels where they disagree by more than 2% are dropped. It undistorts, rectifies from the SfM poses (vertical layouts are transposed, mirrored layouts are flipped), and runs OpenCV semi-global matching with a left-right consistency check. The disparity range comes from the SfM depths. Each depth pixel is kept only if it **agrees within 1.5% with at least 2 neighboring views' depth maps**. The survivors are back-projected, voxel-averaged, and cleaned with statistical outlier removal.
+4. **`recon/robot_map.py`** finds the floor with RANSAC (the largest plane roughly perpendicular to gravity, below the cameras), rotates it to Z=0, and sets metric scale. ARKit captures use ARKit's exact gravity. For plain video, it tries every camera axis as "up" and keeps the best-supported floor, so a sideways or wrongly-flagged clip still comes out level. It then writes the nav2 occupancy grid and voxel map.
 5. **`viewer/index.html`** is a three.js point-cloud viewer with a frustum animation.
 
 ## Measured results (Mip-NeRF 360 *room* scene, 311 handheld frames, 4-core CPU)
@@ -77,26 +77,33 @@ ScanCapture app ─► ingest_arkit.py ─► (LiDAR) fuse depth with ARKit pose
 | Frames registered by SfM | **311 / 311** |
 | Camera position error vs dataset reference poses (after similarity alignment) | **0.10 %** of trajectory size (≈ 5 mm in a 5 m room) |
 | Camera rotation error | median **0.10°**, max 0.36° |
-| Dense points | 1.15 M (from 12.9 M raw depth samples) |
-| Time | features 53 s, matching 36 s, mapping 97 s, dense 90 s, map 15 s |
-| Simulated iPhone clip (HEVC Main10, HLG HDR, `.MOV`) through `run.py` | see `docs/RESULTS.md` |
-| ARKit path, synthetic capture in the app's exact format, 1 % depth noise | fused cloud within **6.5 mm median** (17.5 mm p90) of ground truth, camera height 1.38 m vs 1.40 m |
+| Dense points | 1.67 M (two stereo partners per frame; 1.15 M with one) |
+| Depth that survives multi-view consistency, median per frame | 17 % of pixels (6 % with one partner) |
+| Floor flatness (spread of floor points) | 28 mm std (26.6 mm with one partner) |
+| Time | features 53 s, matching 36 s, mapping 97 s, dense 150 s, map 15 s |
+
+**Pipeline paths tested end to end** (all on the same room, so the answer is known):
+
+| Path | What was tested | Result |
+|---|---|---|
+| Video, iPhone-style file | HEVC Main10 `.MOV`, HLG HDR, portrait rotation flag, 31 s → `python run.py IMG_0002.MOV` | 180 keyframes (51 still-phone duplicates dropped), **180/180 registered**, 1.08 M points, upright map. 8 min. |
+| App, LiDAR (17 Pro) | synthetic capture in the app's exact format, 1 % depth noise | fused cloud within **6.5 mm median** (17.5 mm p90) of ground truth. 20 s. |
+| App, **no LiDAR (base iPhone 17)** | PhoneScan format, no depth, 1.5 cm ARKit pose noise, crash-truncated `frames.jsonl` | **156/156 registered**, metric scale off by **0.55 %**, trajectory fit 2.4 cm, camera height 1.401 m (true 1.40 m). 5 min. |
+| App formats | PhoneScan `transforms.json` (uint16 mm PNG depth) vs ScanCapture `frames.jsonl` | same cloud to 0.6 mm median |
+
+![iPhone-style video result](docs/img/iphone_style_video.png)
+
+*Video path on the simulated iPhone clip (orange tint: the test clip was SDR footage labelled as HDR, so tone-mapping over-warms it; real iPhone HDR looks normal).*
 
 Reproduce: `python tests/eval_poses.py out/<name>/sfm/sparse_best <reference sparse dir>`; ARKit round-trip test: `tests/make_synthetic_arkit.py`.
 
 ## iOS app (`ios/`)
 
-SwiftUI + ARKit + RealityKit, iOS 17+. While scanning it shows the live LiDAR mesh (or feature points on non-LiDAR phones), the tracking status, frame count and metres walked. A frame is saved only after ≥5 cm of movement or ≥5° of rotation, at most 6 per second. Captures go to the app's Documents folder, which is visible in the Files app. Share them with the share button (AirDrop to your Mac).
+**PhoneScan** is the capture app: SwiftUI + ARKit, iOS 17+. Setup, capture format and screenshots are in [`ios/README.md`](ios/README.md) and [`docs/PHONESCAN.md`](docs/PHONESCAN.md). In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, scan, then AirDrop or upload the capture and run `python run.py <capture> --arkit`. Its upload receiver can run that automatically: `python3 tools/receive_server.py --on-upload "python run.py {dir} --arkit"`.
 
-```bash
-brew install xcodegen
-cd ios && xcodegen && open ScanCapture.xcodeproj
-# Xcode: select your team under Signing & Capabilities, plug in the iPhone, Run.
-```
+`ios/ScanCapture/` + `ios/project.yml` is an earlier, smaller prototype that writes `frames.jsonl` + raw `.bin` depth. The pipeline reads both formats.
 
-Capture format (`scan_<date>/`): `frames.jsonl` (one line per frame: `world_from_camera` column-major 4×4 in ARKit convention, `intrinsics` column-major 3×3, file names), `rgb/*.jpg`, `depth/*.bin` (float32 metres, 256×192), `conf/*.bin` (uint8 0–2), `meta.json`.
-
-> The app was written without access to a Mac in this environment. The Python side was tested against synthetic captures in the exact same format, but the Swift code has **not been compiled yet**. Expect a small fix or two on first build.
+> Neither app has been built on a Mac or run on a device yet. The Python side is tested against synthetic captures in both apps' exact formats. Expect a small fix or two on first build.
 
 ## Capture tips
 
@@ -108,7 +115,8 @@ Capture format (`scan_<date>/`): `frames.jsonl` (one line per frame: `world_from
 
 ## Known limitations / next steps
 
-- **Video-only scale** comes from an assumed phone height. Use the app (ARKit) for real metres.
-- **Textureless surfaces** (plain walls, glossy floors) get sparse stereo coverage. LiDAR fixes this on Pro phones. A learned monocular-depth prior (as ViPE uses) would help without LiDAR; it was left out because this environment couldn't fetch model weights safely.
+- **Video-only scale** comes from an assumed phone height (on the test clip it came out 4 % off). Use the app (ARKit) for real metres: 0.55 % off without LiDAR.
+- **Not yet tested on real iPhone 17 footage.** Everything above is the real pipeline on real images, but the iPhone files and captures are simulated.
+- **Textureless surfaces** (plain walls, glossy floors) still get sparse stereo coverage, even with two partners per frame. LiDAR fixes this on Pro phones. A learned monocular-depth prior (as ViPE uses) would help without LiDAR; it was left out because this environment couldn't fetch model weights safely.
 - Large multi-room floors: SfM time grows with frame count. Next steps are vocabulary-tree loop closure and `pose_only_long`-style windowed processing.
 - GPU path: on an NVIDIA machine, NVIDIA's ViPE (`pip install nvidia-vipe`) can replace `sfm.py` + `mvs.py`, and nvblox can do real-time TSDF/ESDF mapping on the robot itself.

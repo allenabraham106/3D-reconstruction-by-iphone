@@ -65,6 +65,7 @@ def main():
     shutil.copytree(ROOT / "viewer", vdir)
     shutil.copy(out / "robot" / "map_metric.ply", vdir / "dense.ply")
     shutil.copy(out / "robot" / "cameras_metric.json", vdir / "cameras.json")
+    (vdir / "view.json").write_text('{"up": [0, 0, 1]}')  # robot map is z-up
     print(f"\nDone in {time.time()-t0:.0f}s.\n  View:  cd {vdir} && python3 -m http.server 8000"
           f"  ->  http://localhost:8000\n  Robot: {out/'robot'}")
 
