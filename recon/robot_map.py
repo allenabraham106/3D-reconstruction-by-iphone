@@ -80,12 +80,27 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     cams = json.loads(Path(cameras_json).read_text())
     Rs = np.array([c["R"] for c in cams])
     Cs = np.array([c["C"] for c in cams])
-    if metric:  # ARKit world: +Y is gravity-up, exactly
-        up0 = np.array([0.0, 1.0, 0.0])
-    else:  # camera -Y (image up) averaged = rough gravity-up for a phone held upright
-        up0 = -Rs[:, 1, :].mean(0)
-        up0 /= np.linalg.norm(up0)
-    n, d, frac = fit_floor(P, up0, Cs)
+    up0 = np.array([0.0, 1.0, 0.0])  # ARKit world: +Y is gravity-up, exactly
+    if metric:
+        n, d, frac = fit_floor(P, up0, Cs)
+    else:
+        # Image-up is usually world-up (phone held upright), but not if the video's
+        # rotation flag was wrong or the phone was sideways. Try every camera axis as
+        # gravity and keep the best-supported floor that lies below the cameras.
+        best = None
+        for axis, sign in ((1, -1), (1, 1), (0, -1), (0, 1)):
+            cand = sign * Rs[:, axis, :].mean(0)
+            if np.linalg.norm(cand) < 0.3:  # axis not consistent across the capture
+                continue
+            cand /= np.linalg.norm(cand)
+            try:
+                n_, d_, f_ = fit_floor(P, cand, Cs)
+            except (TypeError, ValueError):
+                continue
+            above = np.median(Cs @ n_ + d_) > 0
+            if above and (best is None or f_ > best[2] * 1.2):
+                best = (n_, d_, f_)
+        n, d, frac = best
     # rotate floor normal to +Z, translate floor to Z=0
     R = rot_between(n, np.array([0, 0, 1.0]))
     Pw = P @ R.T
