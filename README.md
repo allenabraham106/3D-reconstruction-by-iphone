@@ -137,6 +137,14 @@ The kitchen capture circles a table and almost never sees the floor, so the map 
 
 Reproduce: `python tests/eval_poses.py out/<name>/sfm/sparse_best <reference sparse dir>`; ARKit round-trip test: `tests/make_synthetic_arkit.py`.
 
+## Robot: ROS 2 / nav2 (`ros2/pioneer_map`)
+
+```bash
+ros2 launch pioneer_map map.launch.py robot_dir:=/path/to/out/<scan>/robot
+```
+
+This serves `/map` (nav2 `map_server`, 5 cm occupancy grid), `/pioneer/voxels` (PointCloud2, 5 cm 3D occupancy) and `/pioneer/mesh` (an RViz marker), all in the `map` frame: metres, Z up, floor at 0. See [`ros2/pioneer_map/README.md`](ros2/pioneer_map/README.md). The map loaders are unit-tested on the real office scan; the ROS node itself hasn't run on a live ROS install yet.
+
 ## iOS app: Pioneer Home (`ios/`)
 
 <img src="docs/images/pioneer-home/icon.png" width="72" align="left" style="margin-right:12px">
@@ -171,7 +179,8 @@ In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, s
 - **Video-only scale** comes from an assumed phone height (on the test clip it came out 4 % off). Use the app (ARKit) for real metres: 0.05 % off even without LiDAR.
 - **Glass walls and windows** show up as floating fragments (stereo sees through them or matches reflections), and the robot map has no wall there. Real depth sensors share this problem.
 - **Dark areas and plain walls** still leave holes; walking slowly with the lights on helps most. In the apartment, the dark corner kept 5x less depth than the bright rooms.
-- **Speed:** about 1.5-2 h per 1-2 min of video on 4 CPU cores (dense stereo ~50 min, TSDF ~20 min). `fusion="tsdf_fast"` (7 min fusion) is available for previews but leaves more floaters. A GPU would make this minutes.
+- **Speed:** about 1-1.5 h per 1-2 min of video on 4 CPU cores. Plane-sweep frames now run in parallel (2.3x, identical depth), so dense stereo takes ~22 min and TSDF ~20 min. `fusion="tsdf_fast"` (7 min fusion) is available for previews but leaves more floaters. A GPU would make this minutes.
+- **Tried and parked** (measured, opt-in, off by default): a dark-frame mode (3.6x depth in the dark corner alone, but no gain on the full map) and glass-wall detection (finds the right side of the office's glass wall, but places it ~1 m too far out).
 - **Textureless surfaces** (plain walls, glossy floors) still get sparse stereo coverage. LiDAR fixes this on Pro phones. A learned monocular-depth prior (as ViPE uses) would help without LiDAR; it was left out because this environment couldn't fetch model weights safely.
 - Speed: bundle adjustment now runs less often (when the model grows 1.4× instead of 1.1×), which cut SfM time 7–15 % with identical accuracy on the room and kitchen. Tried and rejected: the global (GLOMAP-style) mapper was no faster on these scenes and got the room badly wrong; 4096 instead of 8192 SIFT features gave no consistent gain.
 - Large multi-room floors: SfM time grows with frame count. Next steps are vocabulary-tree loop closure and `pose_only_long`-style windowed processing.
