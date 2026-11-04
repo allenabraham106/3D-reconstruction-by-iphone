@@ -226,6 +226,22 @@ function tick(dt) {
 let last = performance.now();
 renderer.setAnimationLoop((now) => { tick((now - last) / 1000); last = now; controls.update(); renderer.render(scene, camera); });
 
+// ---------- deterministic frame rendering (for recording a fly-around video) ----------
+// window.__renderFrame(u, opts): u in [0, 1] = progress along the capture path; the view
+// orbits the scene (opts.orbit turns, default 0.5) while the live frustum walks the path.
+window.__renderFrame = (u, opts = {}) => {
+  renderer.setAnimationLoop(null);              // stop real-time playback
+  document.getElementById("hud").style.display = opts.hud ? "" : "none";
+  if (cams.length) { t = Math.min(cams.length - 1, u * (cams.length - 1)); playing = false; tick(0); }
+  const turns = opts.orbit ?? 0.5, a0 = opts.start ?? 0.6;
+  const ang = a0 + u * turns * 2 * Math.PI;
+  const r = radius * (opts.dist ?? 0.85), h = radius * (opts.height ?? 0.7);
+  camera.position.set(center.x + r * Math.cos(ang), center.y + h, center.z + r * Math.sin(ang));
+  camera.lookAt(center);
+  renderer.render(scene, camera);
+  return true;
+};
+
 // ---------- loading: ?ply=..&cams=.. , defaults, file picker, drag-drop ----------
 async function loadFiles(files) {
   for (const f of files) {
