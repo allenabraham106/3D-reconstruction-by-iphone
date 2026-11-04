@@ -269,15 +269,18 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     Pw[:, :2] -= xy0
     Cw[:, :2] -= xy0
     # same metric, z-up transform for the TSDF mesh, if the dense step produced one
-    mesh_in = Path(ply).parent / "mesh.ply"
-    if mesh_in.exists():
+    for src_name, dst_name in (("mesh.ply", "mesh_metric.ply"),
+                               ("mesh_inferred.ply", "mesh_inferred_metric.ply")):
+        mesh_in = Path(ply).parent / src_name
+        if not mesh_in.exists():
+            continue
         from tsdf import read_mesh_ply, write_mesh_ply
         V, F, Cm = read_mesh_ply(mesh_in)
         V = V @ R.T
         V[:, 2] -= z0
         V *= scale
         V[:, :2] -= xy0
-        write_mesh_ply(out / "mesh_metric.ply", V, F, Cm)
+        write_mesh_ply(out / dst_name, V, F, Cm)
     # Nothing can be under the floor of a single-level space: points well below it are
     # reflections in glossy floors (stereo matches the mirror image) or noise.
     under = Pw[:, 2] < -below_floor
