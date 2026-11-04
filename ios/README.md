@@ -41,7 +41,7 @@ Full documentation: [`docs/PHONESCAN.md`](../docs/PHONESCAN.md).
 4. With a free Apple ID, also trust the developer on the phone: Settings → General →
    VPN & Device Management. Free-account installs expire after 7 days; re-run from Xcode.
 
-If the project ever fails to open, regenerate it: `brew install xcodegen && cd ios && xcodegen`.
+If the project ever fails to open, regenerate it: `brew install xcodegen && cd ios && xcodegen --spec PhoneScan.yml`. (`ios/project.yml` belongs to the separate ScanCapture prototype.)
 
 ## Capturing
 
@@ -63,8 +63,9 @@ If the project ever fails to open, regenerate it: `brew install xcodegen && cd i
   ```
 
   In the app, Settings → Upload server = `http://<that-machine-ip>:8765`, then tap *Upload to
-  server*. Add `--on-upload "python3 tools/fuse_depth.py {dir}"` to process each upload
-  automatically.
+  server*. Add `--on-upload "python run.py {dir} --arkit"` to run the full reconstruction
+  pipeline (viewer + nav2 occupancy map) on each upload, or
+  `--on-upload "python3 tools/fuse_depth.py {dir}"` for a quick LiDAR cloud.
 
 ## Capture format
 
@@ -87,6 +88,14 @@ axes, right-multiply by `diag(1, -1, -1, 1)`. The tools below do this for you. I
 (`fl_x, fl_y, cx, cy`) are for the full-resolution JPEG; scale them by `256/1920` for depth.
 
 ## Reconstruct
+
+The main pipeline at the repo root reads PhoneScan captures directly (`recon/ingest_arkit.py`):
+
+```bash
+python run.py captures/2026-11-04_03-55-12 --arkit   # -> out/<name>/viewer, robot/occupancy.pgm+yaml, robot/map_metric.ply
+```
+
+Standalone tools:
 
 ```bash
 pip install -r tools/requirements.txt

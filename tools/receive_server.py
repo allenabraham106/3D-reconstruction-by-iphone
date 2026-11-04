@@ -7,7 +7,7 @@ Then in the app: Settings → Upload server → http://<this-machine-ip>:8765, a
 "Upload to server" on a capture. Each upload is saved as captures/<name>.zip and extracted to
 captures/<name>/. Use --on-upload to kick off processing automatically, e.g.
 
-    python3 tools/receive_server.py --on-upload "python3 tools/fuse_depth.py {dir}"
+    python3 tools/receive_server.py --on-upload "python run.py {dir} --arkit"
 
 Standard library only. No auth: run it on a trusted network (home Wi-Fi, Tailscale, robot LAN).
 """
