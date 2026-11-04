@@ -12,6 +12,9 @@ struct CaptureSettings {
         static let showMesh = "showMesh"
         static let use4K = "use4K"
         static let serverURL = "serverURL"
+        static let showFeaturePoints = "showFeaturePoints"
+        static let didOnboard = "didOnboard"
+        static let hidePhotoModeCard = "hidePhotoModeCard"
     }
 
     static let defaults: [String: Any] = [
@@ -24,7 +27,30 @@ struct CaptureSettings {
         Key.showMesh: true,
         Key.use4K: false,
         Key.serverURL: "http://192.168.1.100:8765",
+        Key.showFeaturePoints: true,
+        Key.didOnboard: false,
+        Key.hidePhotoModeCard: false,
     ]
+
+    /// Named keyframe densities shown in Settings. Values: (cm, degrees, seconds).
+    enum Preset: String, CaseIterable, Identifiable {
+        case quick = "Quick", balanced = "Balanced", detailed = "Detailed"
+        var id: String { rawValue }
+        var values: (Double, Double, Double) {
+            switch self {
+            case .quick: return (10, 10, 0.4)
+            case .balanced: return (5, 5, 0.2)
+            case .detailed: return (3, 3, 0.1)
+            }
+        }
+        var blurb: String {
+            switch self {
+            case .quick: return "Fewer frames, smaller files. Good for a fast test."
+            case .balanced: return "Recommended for rooms."
+            case .detailed: return "Lots of overlap for the best splats. About 3× the frames."
+            }
+        }
+    }
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: defaults)

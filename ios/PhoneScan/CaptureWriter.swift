@@ -147,7 +147,7 @@ final class CaptureWriter {
     }
 
     /// Waits for queued frames, then writes transforms.json, mesh.ply and metadata.json.
-    func finish(mesh: MeshSnapshot?, completion: @escaping (Result<URL, Error>) -> Void) {
+    func finish(mesh: MeshSnapshot?, distance: Float = 0, completion: @escaping (Result<URL, Error>) -> Void) {
         queue.async { [self] in
             do {
                 try jsonl.close()
@@ -159,7 +159,7 @@ final class CaptureWriter {
                 if !featurePoints.isEmpty {
                     try writeFeaturePoints(to: directory.appendingPathComponent("arkit_points.ply"))
                 }
-                try writeMetadata(frames: sorted.count, meshFaces: mesh?.faceCount ?? 0)
+                try writeMetadata(frames: sorted.count, meshFaces: mesh?.faceCount ?? 0, distance: distance)
                 completion(.success(directory))
             } catch {
                 completion(.failure(error))
@@ -185,7 +185,7 @@ final class CaptureWriter {
             "camera_model": "OPENCV",
             "k1": 0, "k2": 0, "p1": 0, "p2": 0,
             "orientation_override": "none",
-            "source": "PhoneScan (ARKit)",
+            "source": "Pioneer Home (ARKit)",
             "pose_convention": "camera-to-world, OpenGL camera axes (x right, y up, -z forward), world y-up gravity aligned, metres",
         ]
         if hasDepth {
@@ -224,7 +224,7 @@ final class CaptureWriter {
         try data.write(to: url)
     }
 
-    private func writeMetadata(frames: Int, meshFaces: Int) throws {
+    private func writeMetadata(frames: Int, meshFaces: Int, distance: Float) throws {
         struct Metadata: Codable {
             var format_version = 1
             var created_at: String
@@ -232,6 +232,7 @@ final class CaptureWriter {
             var frame_count: Int
             var has_depth: Bool
             var mesh_faces: Int
+            var distance_m: Float
             var arkit_feature_points: Int
             var device: DeviceInfo
             var keyframe_min_translation_m: Float
@@ -244,6 +245,7 @@ final class CaptureWriter {
             frame_count: frames,
             has_depth: hasDepth,
             mesh_faces: meshFaces,
+            distance_m: distance,
             arkit_feature_points: featurePoints.count,
             device: deviceInfo,
             keyframe_min_translation_m: settings.minTranslation,
