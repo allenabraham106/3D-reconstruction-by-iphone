@@ -101,9 +101,75 @@ def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10, min_d
     return n, d, inl.sum() / total
 
 
+def find_glass_walls(Pw, Cw, z_band=(0.2, 2.2), thr=0.05, min_inliers=200, min_len=1.5,
+                     behind_min=1.0, behind_ratio=1.0, max_walls=6, suppress=0.3, seed=0):
+    """Vertical planes (lines in top view) that look like glass: things are seen *behind*
+    them, on the side the walker never was.
+
+    An opaque wall hides what's behind it, so almost no points lie beyond it. A glass wall
+    or window has a frame/mullions (some points on the line) and the world behind it
+    (many points beyond). Returns [(p0, p1, ratio_behind)] segment endpoints in XY.
+
+    EXPERIMENTAL (build(detect_glass=True)): on the real office it found the glass side
+    and nothing in the apartment, but placed the line ~1 m beyond the glass, inside the
+    see-through clutter -- stereo rarely puts points on the glass itself."""
+    rng = np.random.default_rng(seed)
+    z = Pw[:, 2]
+    Q = Pw[(z > z_band[0]) & (z < z_band[1]), :2]
+    if len(Q) > 300000:
+        Q = Q[rng.choice(len(Q), 300000, replace=False)]
+    cams = Cw[:, :2]
+    remaining = np.ones(len(Q), bool)
+    walls = []
+    for _ in range(max_walls * 3):
+        idx = np.flatnonzero(remaining)
+        if len(idx) < min_inliers or len(walls) >= max_walls:
+            break
+        best = None
+        for _ in range(300):
+            a, b = Q[rng.choice(idx, 2, replace=False)]
+            d = b - a
+            L = np.linalg.norm(d)
+            if L < 0.3:
+                continue
+            n = np.array([-d[1], d[0]]) / L
+            dist = (Q[idx] - a) @ n
+            inl = np.abs(dist) < thr
+            if best is None or inl.sum() > best[2].sum():
+                best = (a, n, inl)
+        if best is None or best[2].sum() < min_inliers:
+            break
+        a, n, inl = best
+        pts = Q[idx[inl]]
+        dist_r = (Q - a) @ n
+        remaining &= np.abs(dist_r) > suppress  # drop the whole band: no duplicate lines
+        t_dir = np.array([n[1], -n[0]])
+        t = (pts - a) @ t_dir
+        t0, t1 = np.percentile(t, 2), np.percentile(t, 98)
+        if t1 - t0 < min_len:
+            continue
+        # only cameras facing this stretch of wall count; none may be behind it (a room
+        # the walker went into is not "the other side of glass")
+        c_along = (cams - a) @ t_dir
+        c_dist = (cams - a) @ n
+        span = (c_along > t0 - 0.5) & (c_along < t1 + 0.5)
+        if span.sum() < 5:
+            continue
+        walk_side = np.sign(np.median(c_dist[span]))
+        if np.any(c_dist[span] * walk_side < 0) or np.any(np.abs(c_dist) < 0.2):
+            continue
+        along = (Q - a) @ t_dir
+        within = (along > t0) & (along < t1)
+        behind = within & (dist_r * walk_side < -behind_min)
+        ratio = behind.sum() / max(inl.sum(), 1)
+        if ratio > behind_ratio:
+            walls.append((a + t0 * t_dir, a + t1 * t_dir, float(ratio)))
+    return walls
+
+
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
           robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2,
-          below_floor=0.05, obst_ratio=0.5, reach_radius=3.5):
+          below_floor=0.05, obst_ratio=0.5, reach_radius=3.5, detect_glass=False):
     out.mkdir(parents=True, exist_ok=True)
     P, C = read_ply(ply)
     cams = json.loads(Path(cameras_json).read_text())
@@ -233,6 +299,21 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
                               cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))).astype(bool)
     inferred = closed & ~free_mask & ~occ_mask
 
+    # glass walls / windows: draw them as walls (stereo sees through glass, so the map
+    # would otherwise have a gap there, or "obstacles" out in the room beyond)
+    glass = find_glass_walls(Pw, Cw) if detect_glass else []
+    glass_cells = np.zeros((H, W), np.uint8)
+    for p0, p1, _ in glass:
+        a_ = tuple(int(x) for x in np.floor((p0 - lo) / cell))
+        b_ = tuple(int(x) for x in np.floor((p1 - lo) / cell))
+        cv2.line(glass_cells, a_, b_, 1, 2)
+    glass_mask = glass_cells.astype(bool)
+    occ_mask = occ_mask | glass_mask
+    free_mask = free_mask & ~glass_mask
+    inferred = inferred & ~glass_mask
+    seen_free = seen_free & ~glass_mask
+    walked = walked & ~glass_mask
+
     def write_grid(name, free_cells):
         grid = np.full((H, W), 205, np.uint8)  # unknown
         grid[free_cells] = 254
@@ -250,6 +331,7 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     prev[walked & ~seen_free] = (200, 240, 200)
     prev[inferred] = (245, 225, 190)
     prev[occ_mask] = (0, 0, 0)
+    prev[glass_mask] = (230, 120, 0)  # glass walls drawn in blue (BGR)
     prev = prev[::-1].copy()
     pts = path_px.copy()
     pts[:, 1] = H - 1 - pts[:, 1]
@@ -293,6 +375,9 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
             "false_obstacles_carved_by_walk": int(carved.sum()),
             "points_below_floor_removed": int(under.sum()),
             "obstacles_beyond_reach_unknown": int(beyond.sum()),
+            "glass_walls": [{"from": [round(float(v), 2) for v in p0], "to": [round(float(v), 2) for v in p1],
+                             "length_m": round(float(np.linalg.norm(p1 - p0)), 2),
+                             "behind_ratio": round(r, 2)} for p0, p1, r in glass],
             "points": int(len(Pw)), "voxels_5cm": int(len(vi)),
             "scene_extent_m": (Pw.max(0) - Pw.min(0)).round(2).tolist(),
             "camera_height_median_m": float(np.median(Cw[:, 2])), "warnings": warnings}
