@@ -28,6 +28,9 @@ def main():
                     help="approx. phone height above the floor while filming (sets metric scale)")
     ap.add_argument("--arkit", action="store_true", help="input is an iOS capture-app folder")
     ap.add_argument("--stereo-scale", type=float, default=1.0)
+    ap.add_argument("--dense-every", type=int, default=1,
+                    help="compute depth for every k-th frame (others still used as sources); "
+                         "2 roughly halves the dense stage on video")
     ap.add_argument("--stereo", choices=["sweep", "sgbm"], default="sweep",
                     help="sweep: plane sweep, works for any motion (default); "
                          "sgbm: faster rectified stereo, only for sideways/orbit captures")
@@ -56,7 +59,8 @@ def main():
         extra = attach_submodels(rec, out / "sfm")  # bridge pieces SfM couldn't join
         from mvs import run_mvs
         run_mvs(out / "sfm" / "sparse_best", img_dir, out / "dense", scale=a.stereo_scale,
-                extra_sparse=extra, method=a.stereo)
+                extra_sparse=extra, method=a.stereo, cache_depth=True,
+                dense_every=a.dense_every)
         ply, cams = out / "dense" / "dense.ply", out / "dense" / "cameras.json"
         metric = False
 
