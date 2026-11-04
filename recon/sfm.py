@@ -41,6 +41,25 @@ def write_position_priors(db_path, priors, sigma=0.05):
     return n
 
 
+def bridge_pairs(work: Path, image_names, every=3):
+    """Pairs that can link SfM pieces which share no frames (a clean split).
+
+    Frames outside the largest piece are matched against every `every`-th frame of
+    the largest piece (and of each other). ~8x fewer pairs than exhaustive matching on a
+    277-frame video, and enough when the walk comes back past earlier spots."""
+    pieces = []
+    for d in sorted(work.glob("sparse/[0-9]*")):
+        r = pycolmap.Reconstruction(str(d))
+        pieces.append(sorted(im.name for im in r.images.values()))
+    pieces.sort(key=len, reverse=True)
+    main = set(pieces[0]) if pieces else set()
+    others = sorted(set(image_names) - main)
+    anchors = sorted(main)[::every]
+    pairs = {(a, b) for a in others for b in anchors}
+    pairs |= {(a, b) for i, a in enumerate(others) for b in others[i + 1:][::every]}
+    return sorted(pairs)
+
+
 def attach_submodels(main, work: Path, min_shared=5, max_center_err_frac=0.02):
     """Level-1 gap bridging: align leftover sub-models into the main model's frame.
 
@@ -131,11 +150,31 @@ def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600
     if (rec is None or rec.num_reg_images() < 0.9 * n_images) and n_images <= exhaustive_limit:
         # Split into several models (pauses, revisits, fast turns). Match every pair so
         # revisited places link the pieces together, then map again.
-        print("[sfm] incomplete -> adding exhaustive matching for loop closure")
-        pycolmap.match_exhaustive(db, device=pycolmap.Device.cpu)
+        names = sorted(p.name for p in image_dir.iterdir()
+                       if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+        pairs = bridge_pairs(work, names)
+        n_exh = len(names) * (len(names) - 1) // 2
+        if len(pairs) < 0.5 * n_exh:
+            print(f"[sfm] incomplete -> bridge matching {len(pairs):,} pairs "
+                  f"(exhaustive would be {n_exh:,})")
+            lst = work / "bridge_pairs.txt"
+            lst.write_text("".join(f"{a} {b}\n" for a, b in pairs))
+            po = pycolmap.ImportedPairingOptions()
+            po.match_list_path = lst
+            pycolmap.match_image_pairs(db, pairing_options=po, device=pycolmap.Device.cpu)
+        else:
+            print("[sfm] incomplete -> adding exhaustive matching for loop closure")
+            pycolmap.match_exhaustive(db, device=pycolmap.Device.cpu)
         rec2 = _map(db, image_dir, work / "sparse_exhaustive", use_priors, ba_ratio)
         if rec2 is not None and (rec is None or rec2.num_reg_images() > rec.num_reg_images()):
             rec = rec2
+        if len(pairs) < 0.5 * n_exh and rec.num_reg_images() < 0.9 * n_images:
+            # bridge pairs weren't enough: fall back to matching everything
+            print(f"[sfm] still {rec.num_reg_images()}/{n_images} -> exhaustive matching")
+            pycolmap.match_exhaustive(db, device=pycolmap.Device.cpu)
+            rec3 = _map(db, image_dir, work / "sparse_exhaustive_full", use_priors, ba_ratio)
+            if rec3 is not None and rec3.num_reg_images() > rec.num_reg_images():
+                rec = rec3
         print(f"[sfm] re-mapping {time.time()-t:.0f}s: {rec.num_reg_images()}/{n_images}")
     if rec is None:
         raise RuntimeError("SfM failed: no reconstruction")
