@@ -103,7 +103,7 @@ def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10, min_d
 
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
           robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2,
-          below_floor=0.05, obst_ratio=0.5):
+          below_floor=0.05, obst_ratio=0.5, reach_radius=3.5):
     out.mkdir(parents=True, exist_ok=True)
     P, C = read_ply(ply)
     cams = json.loads(Path(cameras_json).read_text())
@@ -214,6 +214,16 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
             cv2.line(core, tuple(int(x) for x in a_), tuple(int(x) for x in b_), 1, 2 * cr)
     carved = occ_mask & core.astype(bool)
     occ_mask = occ_mask & ~carved
+    # Obstacles far from anywhere the walker went are mostly seen *through* glass walls
+    # / windows (an atrium, the street) or are reflection ghosts. The robot can't reach
+    # them through the glass anyway: mark them unknown rather than blocked.
+    far = np.zeros((H, W), np.uint8)
+    rr = max(1, int(round(reach_radius / cell)))
+    for a_, b_ in zip(path_px[:-1], path_px[1:]):
+        if np.linalg.norm((b_ - a_) * cell) < 1.0:
+            cv2.line(far, tuple(int(x) for x in a_), tuple(int(x) for x in b_), 1, 2 * rr)
+    beyond = occ_mask & ~far.astype(bool)
+    occ_mask = occ_mask & ~beyond
     walked = walked.astype(bool) & ~occ_mask
     free_mask = seen_free | walked
     # Inferred ("imagined") floor: gaps up to ~infer_gap between known-free cells with no
@@ -282,6 +292,7 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
             "inferred_cells": int(inferred.sum()), "occupied_cells": int(occ_mask.sum()),
             "false_obstacles_carved_by_walk": int(carved.sum()),
             "points_below_floor_removed": int(under.sum()),
+            "obstacles_beyond_reach_unknown": int(beyond.sum()),
             "points": int(len(Pw)), "voxels_5cm": int(len(vi)),
             "scene_extent_m": (Pw.max(0) - Pw.min(0)).round(2).tolist(),
             "camera_height_median_m": float(np.median(Cw[:, 2])), "warnings": warnings}

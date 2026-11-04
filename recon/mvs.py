@@ -526,6 +526,15 @@ def mls_smooth(P, k=16, max_shift_frac=0.5, iters=1):
     return Q
 
 
+def is_dark(view, thresh=70):
+    """Mean grey level below thresh (0-255): low light -> noisier matching."""
+    if thresh is None or thresh <= 0:
+        return False
+    if not hasattr(view, "_mean_grey"):
+        view._mean_grey = float(cv2.cvtColor(view.img, cv2.COLOR_BGR2GRAY).mean())
+    return view._mean_grey < thresh
+
+
 def merge_depths(A, B, rel_tol=0.02):
     """Fill A's holes from B; where both have depth but disagree, trust neither."""
     out = A.copy()
@@ -542,7 +551,7 @@ def merge_depths(A, B, rel_tol=0.02):
 def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_frac=0.0015,
             rel_tol=None, min_agree=None, max_views=None, n_partners=2, extra_sparse=(),
             method="sweep", temporal_sources=True, walls=False, fusion="tsdf",
-            tsdf_voxel_frac=0.0022, cache_depth=False):
+            tsdf_voxel_frac=0.0022, cache_depth=False, dark_thresh=70, dense_every=1):
     """extra_sparse: sub-models already aligned into the main model's frame (see
     sfm.attach_submodels); their frames that the main model lacks are added as views."""
     t0 = time.time()
@@ -587,12 +596,17 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
     if wall_normals:
         print(f"[mvs] wall directions (Manhattan) estimated from sparse points", flush=True)
     for i, v in enumerate(views):
+        if dense_every > 1 and order.get(v.id, 0) % dense_every:
+            continue  # video neighbours overlap heavily: depth for every k-th frame only,
+            # the skipped ones still serve as stereo sources and consistency checks
         if method == "sweep":  # plane sweep: any camera motion, incl. walking forward
             srcs = sweep_sources(v, by_tag, order, stereo, med) if temporal_sources else \
                 (stereo.get(v.id, [])[:3] or neigh.get(v.id, [])[:3])
             if srcs:  # fronto + ground planes, fine->coarse, local-contrast boost
+                dark = is_dark(v, dark_thresh)
+                extra_kw = dict(win=5, min_std=1.0) if dark else {}
                 v.depth = planesweep_multiscale(v, srcs, up_world=up_world, clahe=True,
-                                                wall_normals=wall_normals)
+                                                wall_normals=wall_normals, **extra_kw)
         else:  # rectified SGBM: fast, but only for sideways / orbiting motion
             got = 0
             for partner in stereo.get(v.id, []):
@@ -606,15 +620,29 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
         if i % 25 == 0:
             cov = 0 if v.depth is None else (v.depth > 0).mean()
             print(f"[mvs] stereo {i+1}/{len(views)} coverage={cov:.2f} {time.time()-t0:.0f}s", flush=True)
+    if dense_every > 1:  # agreement must come from neighbours that actually have depth
+        _, neigh_all, _ = choose_partners(views, rec, k_consistency=12)
+        for v in views:
+            neigh[v.id] = [u for u in neigh_all.get(v.id, []) if u.depth is not None][:4]
     allP, allC, cov_raw, cov_fused = [], [], [], []
     fused_views, fused_masks = [], []
     for v in views:
         if v.depth is None or getattr(v, "depth_only_support", False):
             continue  # overlap copies only serve as partners for a sub-model's new frames
-        m = consistency_mask(v, neigh.get(v.id, []), rel_tol, min_agree)
+        if method == "sweep" and is_dark(v, dark_thresh):
+            # dark frames: bigger windows above, and a looser agreement rule here --
+            # measured on the real dark corner: 4.1% -> 14.8% trusted depth, no extra
+            # smear; TSDF free-space carving cleans what slips through
+            m = consistency_mask(v, neigh.get(v.id, []), 0.02, 1)
+        else:
+            m = consistency_mask(v, neigh.get(v.id, []), rel_tol, min_agree)
         cov_raw.append((v.depth > 0).mean()); cov_fused.append(m.mean())
         P, C = backproject(v, v.depth, m)
-        allP.append(P); allC.append(C)
+        # TSDF reads the depth maps directly; the point list is only needed for the
+        # scene size and a comparison cloud, so keep a sample (a bright, textured scene
+        # gave 89M raw points and exhausted 15 GB of RAM in point fusion)
+        sub = 1 if fusion == "points" else 4
+        allP.append(P[::sub]); allC.append(C[::sub])
         fused_views.append(v); fused_masks.append(m)
         if cache_depth:  # re-fuse later without re-running stereo (the slow part)
             (out_dir / "depth_cache").mkdir(exist_ok=True)
