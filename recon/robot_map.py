@@ -64,7 +64,7 @@ def _ransac_plane(cand, up, thr, rng, iters):
     return n2, -n2 @ c, np.abs(cand @ n2 - n2 @ c) < thr
 
 
-def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10):
+def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10, min_drop_ratio=1.25):
     """The floor = the LOWEST well-supported horizontal plane below the cameras.
 
     Tables, beds and counters are big horizontal planes too, and in a close-up scan
@@ -89,6 +89,13 @@ def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10):
             break
         lower = _ransac_plane(below, up, thr, rng, iters)
         if lower is None or lower[2].sum() < min_rel_support * first_support:
+            break
+        # A table/counter -> floor step is a big drop (phone ~2x farther from the floor).
+        # Reflections in glossy floors and noise make a thin layer just *under* the
+        # true floor; ignore lower planes that are not clearly farther from the cameras.
+        h_cur = np.median(cam_centres @ n + d)
+        h_low = np.median(cam_centres @ lower[0] + lower[1])
+        if h_low < min_drop_ratio * h_cur:
             break
         n, d, inl = lower
     return n, d, inl.sum() / total
@@ -119,8 +126,17 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
             except (TypeError, ValueError):
                 continue
             above = np.median(Cs @ n_ + d_) > 0
-            if above and (best is None or f_ > best[2] * 1.2):
+            # People film roughly horizontally: viewing directions run along the floor.
+            # If the cameras mostly look *into* the candidate plane, it is a wall.
+            look = np.median(np.abs(Rs[:, 2, :] @ n_))
+            print(f"[robot_map] up candidate axis {axis}{'+' if sign > 0 else '-'}: floor support "
+                  f"{f_:.3f}, cameras above: {above}, view-dir alignment {look:.2f}")
+            if not above or look > 0.75:
+                continue
+            if best is None or f_ > best[2] * 1.2:
                 best = (n_, d_, f_)
+        if best is None:
+            raise ValueError("could not find a floor plane below the cameras")
         n, d, frac = best
     # rotate floor normal to +Z, translate floor to Z=0
     R = rot_between(n, np.array([0, 0, 1.0]))
