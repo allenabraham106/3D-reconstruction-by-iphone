@@ -37,16 +37,8 @@ def rot_between(a, b):
     return np.eye(3) + vx + vx @ vx * (1 / (1 + c))
 
 
-def fit_floor(P, up, cam_centres, iters=600, seed=0):
-    """RANSAC plane roughly perpendicular to `up`, below the cameras, with most support."""
-    rng = np.random.default_rng(seed)
-    h = P @ up
-    cam_h = np.median(cam_centres @ up)
-    cand = P[h < cam_h]  # floor is below the phone
-    if len(cand) > 200000:
-        cand = cand[rng.choice(len(cand), 200000, replace=False)]
-    extent = np.ptp(cand @ up)
-    thr = max(extent * 0.01, 1e-6)
+def _ransac_plane(cand, up, thr, rng, iters):
+    """Plane within 15 deg of horizontal with the most inliers (or None)."""
     best, best_n = None, 0
     for _ in range(iters):
         s = cand[rng.choice(len(cand), 3, replace=False)]
@@ -60,17 +52,46 @@ def fit_floor(P, up, cam_centres, iters=600, seed=0):
             continue
         d = -n @ s[0]
         inl = np.abs(cand @ n + d) < thr
-        # prefer the LOWEST big plane (tables are planes too)
-        score = inl.sum()
-        if score > best_n:
-            best_n, best = score, (n, d, inl)
+        if inl.sum() > best_n:
+            best_n, best = inl.sum(), (n, d, inl)
+    if best is None:
+        return None
     n, d, inl = best
-    # least-squares refine on inliers
-    Q = cand[inl]
+    Q = cand[inl]  # least-squares refine on inliers
     c = Q.mean(0)
     _, _, vt = np.linalg.svd(Q - c, full_matrices=False)
     n2 = vt[2] if vt[2] @ up > 0 else -vt[2]
-    return n2, -n2 @ c, inl.mean()
+    return n2, -n2 @ c, np.abs(cand @ n2 - n2 @ c) < thr
+
+
+def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10):
+    """The floor = the LOWEST well-supported horizontal plane below the cameras.
+
+    Tables, beds and counters are big horizontal planes too, and in a close-up scan
+    one of them can out-number the floor. So after the biggest plane, keep looking
+    underneath it and take the lowest plane with >= 10% of its support.
+    """
+    rng = np.random.default_rng(seed)
+    cam_h = np.median(cam_centres @ up)
+    cand = P[P @ up < cam_h]  # floor is below the phone
+    if len(cand) > 200000:
+        cand = cand[rng.choice(len(cand), 200000, replace=False)]
+    total = len(cand)
+    thr = max(np.ptp(cand @ up) * 0.01, 1e-6)
+    plane = _ransac_plane(cand, up, thr, rng, iters)
+    if plane is None:
+        raise ValueError("no horizontal plane found")
+    n, d, inl = plane
+    first_support = inl.sum()
+    for _ in range(3):
+        below = cand[(cand @ n + d) < -3 * thr]  # strictly under the current plane
+        if len(below) < max(50, min_rel_support * first_support):
+            break
+        lower = _ransac_plane(below, up, thr, rng, iters)
+        if lower is None or lower[2].sum() < min_rel_support * first_support:
+            break
+        n, d, inl = lower
+    return n, d, inl.sum() / total
 
 
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
@@ -166,13 +187,23 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     vi = np.unique(np.floor((Pw - vmin) / vox).astype(np.int32), axis=0)
     np.savez_compressed(out / "voxels.npz", indices=vi, origin=vmin, voxel_size=vox)
 
+    warnings = []
+    if frac > 0.5:
+        warnings.append("over half the scene lies on one plane: this looks like a close-up/tabletop "
+                        "scan where the real floor was barely seen. The 'floor' may be a table, so "
+                        "scale and the occupancy map are unreliable. Walk the room with the floor in view.")
+    if metric and cam_h < 0.9:
+        warnings.append(f"the phone was only {cam_h:.2f} m above the detected floor: that 'floor' is "
+                        "probably a table or bed, not the ground.")
+    for w in warnings:
+        print("[robot_map] WARNING:", w)
     meta = {"scale_applied": float(scale), "metric_source": "arkit" if metric else
             f"phone_height={phone_height}m", "floor_inlier_fraction": float(frac),
             "grid_cell_m": cell, "grid_size": [int(W), int(H)],
             "free_cells": int(free_mask.sum()), "occupied_cells": int(occ_mask.sum()),
             "points": int(len(Pw)), "voxels_5cm": int(len(vi)),
             "scene_extent_m": (Pw.max(0) - Pw.min(0)).round(2).tolist(),
-            "camera_height_median_m": float(np.median(Cw[:, 2]))}
+            "camera_height_median_m": float(np.median(Cw[:, 2])), "warnings": warnings}
     (out / "map_meta.json").write_text(json.dumps(meta, indent=2))
     print("[robot_map]", json.dumps(meta))
     return meta

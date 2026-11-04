@@ -144,7 +144,8 @@ def sfm_aligned(cap: Path, frames, out: Path):
     from sfm import run_sfm
     import pycolmap
     img_dir = cap / Path(frames[0]["rgb"]).parent  # rgb/ (ScanCapture) or images/ (PhoneScan)
-    run_sfm(img_dir, out / "sfm")
+    priors = {Path(f["rgb"]).name: f["C"].tolist() for f in frames}
+    run_sfm(img_dir, out / "sfm", position_priors=priors)
     P, C, views = run_mvs(out / "sfm" / "sparse_best", img_dir, out / "mvs")
     by_name = {Path(f["rgb"]).name: f for f in frames}
     src = np.array([v.C for v in views if v.name in by_name])
