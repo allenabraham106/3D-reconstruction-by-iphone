@@ -115,6 +115,113 @@ def fuse_tsdf(views, masks, voxel, trunc_vox=4.0, max_voxels=45_000_000, min_wei
     return verts, faces, colors, voxel
 
 
+def fuse_tsdf_fast(views, masks, voxel, trunc_vox=4.0, max_voxels=45_000_000, min_weight=2.0,
+                   pad=0.05, free_step_vox=4.0, pixel_stride=1, free_stride=2, log=print):
+    """Approximation of fuse_tsdf, ~3x faster: only voxels along each depth pixel's ray
+    are touched -- near-surface samples (|sdf| < trunc) plus sparse free-space samples
+    between the camera and the surface (they clear floaters, as full integration does).
+    Per view, each voxel gets the mean of the samples that fell in it (weight 1).
+    Sparser free-space carving leaves more floaters than fuse_tsdf (real apartment:
+    7.4 vs 20 min, floor cells seen 4134 vs 6199), so it is for quick previews."""
+    from skimage.measure import marching_cubes
+
+    pts = []
+    for v, m in zip(views, masks):
+        ys, xs = np.nonzero(m)
+        if len(ys) == 0:
+            continue
+        sel = np.random.default_rng(0).choice(len(ys), min(len(ys), 4000), replace=False)
+        z = v.depth[ys[sel], xs[sel]]
+        pix = np.stack([xs[sel], ys[sel], np.ones(len(sel))], 1)
+        pts.append(((pix @ np.linalg.inv(v.K).T) * z[:, None] - v.t) @ v.R)
+    P = np.concatenate(pts)
+    lo, hi = np.percentile(P, 0.5, 0), np.percentile(P, 99.5, 0)
+    span = hi - lo
+    lo, hi = lo - pad * span, hi + pad * span
+    dims = np.ceil((hi - lo) / voxel).astype(int)
+    while np.prod(dims) > max_voxels:
+        voxel *= 1.15
+        dims = np.ceil((hi - lo) / voxel).astype(int)
+    trunc = trunc_vox * voxel
+    nvox = int(np.prod(dims))
+    log(f"[tsdf-fast] grid {dims.tolist()} = {nvox/1e6:.1f}M voxels, voxel {voxel:.4f}")
+    tsum = np.zeros(nvox, np.float32)   # sum over views of per-view mean tsdf
+    wsum = np.zeros(nvox, np.float32)   # number of views that observed the voxel
+    csum = np.zeros((nvox, 3), np.float32)
+    ccnt = np.zeros(nvox, np.float32)
+    near_offsets = np.arange(-trunc_vox, trunc_vox + 1e-6, 1.0) * voxel  # along-ray, metres
+
+    def to_flat(X):
+        ijk = np.floor((X - lo) / voxel).astype(np.int64)
+        ok = np.all((ijk >= 0) & (ijk < dims), 1)
+        flat = (ijk[:, 0] * dims[1] + ijk[:, 1]) * dims[2] + ijk[:, 2]
+        return flat, ok
+
+    for vi, (v, m) in enumerate(zip(views, masks)):
+        ys, xs = np.nonzero(m)
+        if pixel_stride > 1:
+            keep = (ys % pixel_stride == 0) & (xs % pixel_stride == 0)
+            ys, xs = ys[keep], xs[keep]
+        if len(ys) == 0:
+            continue
+        d = v.depth[ys, xs].astype(np.float64)
+        pix = np.stack([xs, ys, np.ones_like(xs)], 1).astype(np.float64)
+        ray = pix @ np.linalg.inv(v.K).T             # camera ray with z = 1
+        rn = np.linalg.norm(ray, axis=1)
+        rw = ray @ v.R                               # ray direction in world (unnormalised)
+        C = -v.R.T @ v.t
+        rgb = v.img[ys, xs, ::-1].astype(np.float32)
+        # near-surface samples: depth z = d + o * (1/|ray|) so steps are 1 voxel along the ray
+        Z = d[:, None] + near_offsets[None, :] / rn[:, None]
+        X = C + Z[..., None] * rw[:, None, :]
+        sdf = (d[:, None] - Z) * rn[:, None]         # metric distance along the ray
+        obs = np.clip(sdf / trunc, -1, 1).ravel()
+        flat, ok = to_flat(X.reshape(-1, 3))
+        surf = (np.abs(sdf) < 1.5 * voxel).ravel()
+        col_rgb = np.repeat(rgb, Z.shape[1], 0)
+        # free-space samples from the camera to just before the truncation band
+        # (on a sparser pixel grid: clearing floaters doesn't need every ray)
+        fsel = (ys % free_stride == 0) & (xs % free_stride == 0)
+        nfree = np.maximum(((d[fsel] * rn[fsel] - trunc) / (free_step_vox * voxel)).astype(int), 0)
+        nmax = int(min(nfree.max(), 200)) if len(nfree) else 0
+        if nmax > 0:
+            k = np.arange(1, nmax + 1)
+            Zf = (k[None, :] * free_step_vox * voxel) / rn[fsel][:, None]
+            valid_f = k[None, :] <= nfree[:, None]
+            Xf = C + Zf[..., None] * rw[fsel][:, None, :]
+            ff, okf = to_flat(Xf[valid_f])
+            flat = np.concatenate([flat, ff])
+            ok = np.concatenate([ok, okf])
+            obs = np.concatenate([obs, np.ones(len(ff), np.float32)])
+            surf = np.concatenate([surf, np.zeros(len(ff), bool)])
+            col_rgb = np.concatenate([col_rgb, np.zeros((len(ff), 3), np.float32)])
+        flat, obs, surf, col_rgb = flat[ok], obs[ok], surf[ok], col_rgb[ok]
+        # per-view mean observation per voxel, then add with weight 1 (bincount: linear)
+        s_ = np.bincount(flat, weights=obs, minlength=nvox)
+        n_ = np.bincount(flat, minlength=nvox)
+        u = np.flatnonzero(n_)
+        tsum[u] += (s_[u] / n_[u]).astype(np.float32)
+        wsum[u] += 1.0
+        if surf.any():
+            fs = flat[surf]
+            for c in range(3):
+                csum[:, c] += np.bincount(fs, weights=col_rgb[surf, c], minlength=nvox).astype(np.float32)
+            ccnt += np.bincount(fs, minlength=nvox).astype(np.float32)
+        if vi % 40 == 0:
+            log(f"[tsdf-fast] integrated {vi + 1}/{len(views)} views")
+
+    tsdf = np.where(wsum >= min_weight, tsum / np.maximum(wsum, 1), 1.0).astype(np.float32)
+    tsdf = tsdf.reshape(dims)
+    verts, faces, _, _ = marching_cubes(tsdf, level=0.0, spacing=(voxel, voxel, voxel),
+                                        allow_degenerate=False)
+    verts = verts + lo + 0.5 * voxel
+    vi_ = np.clip(np.round((verts - lo - 0.5 * voxel) / voxel).astype(int), 0, dims - 1)
+    fl = (vi_[:, 0] * dims[1] + vi_[:, 1]) * dims[2] + vi_[:, 2]
+    colors = np.clip(csum[fl] / np.maximum(ccnt[fl], 1)[:, None], 0, 255).astype(np.uint8)
+    log(f"[tsdf-fast] mesh: {len(verts):,} vertices, {len(faces):,} faces")
+    return verts, faces, colors, voxel
+
+
 def write_mesh_ply(path, verts, faces, colors):
     verts = verts.astype(np.float32)
     colors = colors.astype(np.uint8)

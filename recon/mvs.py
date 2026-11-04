@@ -627,13 +627,18 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
     # scene-relative voxel size
     extent = np.linalg.norm(np.percentile(P, 98, 0) - np.percentile(P, 2, 0))
     voxel = extent * voxel_frac
-    if fusion == "tsdf":
+    if fusion in ("tsdf", "tsdf_fast"):
         Pp, Cp, cnt = voxel_downsample(P, C, voxel)  # keep the point version to compare
         write_ply(out_dir / "dense_points.ply", *remove_outliers(Pp[cnt >= 2], Cp[cnt >= 2]))
         # average all views' depth in a volume -> noise cancels, walls stop smearing
-        from tsdf import fuse_tsdf, write_mesh_ply
-        verts, faces, cols, tv = fuse_tsdf(fused_views, fused_masks, extent * tsdf_voxel_frac,
-                                           log=lambda m: print(m, flush=True))
+        from tsdf import fuse_tsdf, fuse_tsdf_fast, write_mesh_ply
+        # "tsdf" carves free space through the whole frustum (cleanest robot map, ~20 min
+        # on the real apartment); "tsdf_fast" only walks rays (~7 min, but leaves more
+        # floaters: floor cells seen 6199 -> 4134, obstacle cells 8863 -> 11020).
+        fuse = fuse_tsdf if fusion == "tsdf" else fuse_tsdf_fast
+        kw = {} if fusion == "tsdf" else dict(free_stride=2, free_step_vox=4, min_weight=3)
+        verts, faces, cols, tv = fuse(fused_views, fused_masks, extent * tsdf_voxel_frac,
+                                      log=lambda m: print(m, flush=True), **kw)
         write_mesh_ply(out_dir / "mesh.ply", verts, faces, cols)
         P, C = verts, cols
         print(f"[mvs] TSDF surface: {len(P):,} vertices (voxel {tv:.4f})", flush=True)
