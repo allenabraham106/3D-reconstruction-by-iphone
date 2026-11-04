@@ -31,6 +31,7 @@
     <button id="play">Pause</button>
     <button id="follow">Follow camera</button>
     <button id="allcams">All cameras</button>
+    <button id="inferred" hidden>Inferred floor</button>
     <label>Point size <input id="psize" type="range" min="0.5" max="6" step="0.1" value="2"></label>
   </div>
   <div class="row"><label>Open .ply / cameras.json <input id="file" type="file" multiple accept=".ply,.json" hidden></label></div>
@@ -154,6 +155,22 @@ let playing = true, follow = false, t = 0;
 document.getElementById("play").onclick = (e) => { playing = !playing; e.target.textContent = playing ? "Pause" : "Play"; };
 document.getElementById("follow").onclick = (e) => { follow = !follow; e.target.style.borderColor = follow ? "#7cc4ff" : ""; if (!follow) frame(); };
 document.getElementById("allcams").onclick = () => { if (frustums) frustums.visible = !frustums.visible; };
+// Inferred ("imagined") floor: walked-over or small gaps the cameras never saw. Shown
+// tinted blue so it can't be confused with observed geometry.
+let inferredPts = null;
+const inferredBtn = document.getElementById("inferred");
+inferredBtn.onclick = () => { if (inferredPts) { inferredPts.visible = !inferredPts.visible;
+  inferredBtn.style.borderColor = inferredPts.visible ? "#7cc4ff" : ""; } };
+function setInferred(p) {
+  for (let i = 0; i < p.col.length; i += 3) {  // tint toward blue
+    p.col[i] = p.col[i] * 0.55 + 0.10; p.col[i+1] = p.col[i+1] * 0.6 + 0.2; p.col[i+2] = p.col[i+2] * 0.5 + 0.5;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(p.pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
+  inferredPts = new THREE.Points(g, pointMat); inferredPts.visible = false; root.add(inferredPts);
+  inferredBtn.hidden = false;
+}
 document.getElementById("psize").oninput = (e) => pointMat.size = +e.target.value;
 
 function tick(dt) {
@@ -189,6 +206,7 @@ const q = new URLSearchParams(location.search);
 const plyURL = q.get("ply") || "dense.ply", camURL = q.get("cams") || "cameras.json";
 try { const r = await fetch("view.json"); if (r.ok) knownUp = (await r.json()).up || null; } catch {}
 try { const r = await fetch(camURL); if (r.ok) setCams(await r.json()); } catch {}
+try { const r = await fetch("inferred_floor.ply"); if (r.ok) setInferred(parsePLY(await r.arrayBuffer())); } catch {}
 try { const r = await fetch(plyURL); if (r.ok) setPLY(parsePLY(await r.arrayBuffer()));
       else statusEl.textContent = "Open or drop dense.ply + cameras.json"; }
 catch { statusEl.textContent = "Open or drop dense.ply + cameras.json"; }
