@@ -102,7 +102,8 @@ def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10, min_d
 
 
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
-          robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2):
+          robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2,
+          below_floor=0.05, obst_ratio=0.5):
     out.mkdir(parents=True, exist_ok=True)
     P, C = read_ply(ply)
     cams = json.loads(Path(cameras_json).read_text())
@@ -153,6 +154,10 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     xy0 = np.median(Pw[:, :2], 0)
     Pw[:, :2] -= xy0
     Cw[:, :2] -= xy0
+    # Nothing can be under the floor of a single-level space: points well below it are
+    # reflections in glossy floors (stereo matches the mirror image) or noise.
+    under = Pw[:, 2] < -below_floor
+    Pw, C = Pw[~under], C[~under]
     write_ply(out / "map_metric.ply", Pw, C)
 
     # transformed cameras (metric, z-up) for the viewer / robot
@@ -174,7 +179,10 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     occ = np.zeros((H, W), np.int32)
     np.add.at(free, (ij[floor_pts, 1], ij[floor_pts, 0]), 1)
     np.add.at(occ, (ij[obst_pts, 1], ij[obst_pts, 0]), 1)
-    occ_mask = occ >= 3
+    # Obstacle if enough points stand in the robot's height band *relative to* what the
+    # cell holds overall: with dense depth, a thin haze of noise above a well-seen floor
+    # would otherwise exceed any fixed count.
+    occ_mask = (occ >= 3) & (occ >= obst_ratio * free)
     seen_free = (free >= 1) & ~occ_mask
     # fill small holes in observed floor (sparse stereo on textureless floor)
     seen_free = cv2.morphologyEx(seen_free.astype(np.uint8), cv2.MORPH_CLOSE,
@@ -263,6 +271,7 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
             "free_cells_walked_only": int((walked & ~seen_free).sum()),
             "inferred_cells": int(inferred.sum()), "occupied_cells": int(occ_mask.sum()),
             "false_obstacles_carved_by_walk": int(carved.sum()),
+            "points_below_floor_removed": int(under.sum()),
             "points": int(len(Pw)), "voxels_5cm": int(len(vi)),
             "scene_extent_m": (Pw.max(0) - Pw.min(0)).round(2).tolist(),
             "camera_height_median_m": float(np.median(Cw[:, 2])), "warnings": warnings}
