@@ -9,10 +9,15 @@ intrinsics, and on LiDAR iPhones the depth map, confidence map and the live ARKi
 output drops straight into nerfstudio / gsplat, COLMAP (with known poses) or a plain depth-fusion
 point cloud.
 
-| iPhone | RGB + poses | LiDAR depth | ARKit mesh |
-|---|---|---|---|
-| iPhone 17 Pro / Pro Max (and 12 Pro or later Pros) | ✅ | ✅ | ✅ |
-| iPhone 17, 17 Air, and other non-Pro models | ✅ | none (no LiDAR) | none |
+| iPhone | Photos + ARKit poses | ARKit feature points | LiDAR depth | ARKit mesh |
+|---|---|---|---|---|
+| iPhone 17 Pro / Pro Max (and 12 Pro or later Pros) | ✅ | ✅ | ✅ | ✅ |
+| **iPhone 17**, 17 Air, and other non-Pro models | ✅ | ✅ | none (no LiDAR) | none |
+
+On an iPhone 17 the reconstruction is photo-based: COLMAP triangulation with the ARKit poses, or
+Gaussian splatting from `transforms.json`. Both stay metric and gravity-aligned, because ARKit's
+poses come from the camera + IMU. `arkit_points.ply` gives splatting a real-scale starting cloud.
+Only `tools/fuse_depth.py` needs LiDAR.
 
 Requires iOS 17 or later and Xcode 16 or later.
 
@@ -62,6 +67,7 @@ If the project ever fails to open, regenerate it: `brew install xcodegen && cd i
   transforms.json               nerfstudio format, every frame has its own intrinsics + pose
   frames.jsonl                  the same records appended live, so a crash keeps what was captured
   mesh.ply                      ARKit scene mesh with normals, world frame (LiDAR only)
+  arkit_points.ply              ARKit feature points, sparse metric cloud (every iPhone; referenced as ply_file_path)
   metadata.json                 device model, iOS version, settings, counts
 ```
 
