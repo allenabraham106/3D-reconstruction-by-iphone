@@ -17,9 +17,12 @@ import pycolmap
 
 # ---------------------------------------------------------------- camera helpers
 class View:
-    def __init__(self, image, camera, image_dir, scale=1.0):
+    def __init__(self, image, camera, image_dir, scale=1.0, rec=None, tag=0):
+        # tag = which reconstruction this view came from (main model = 0, attached
+        # sub-models 1, 2, ...); ids are namespaced by it so models never collide.
         self.name = image.name
-        self.id = image.image_id
+        self.id = (tag, image.image_id)
+        self.rec = rec
         T = image.cam_from_world().matrix()  # 3x4
         self.R = T[:, :3].copy()
         self.t = T[:, 3].copy()
@@ -43,7 +46,7 @@ class View:
         self.h, self.w = img.shape[:2]
         pts = [image.points2D[i].point3D_id for i in range(len(image.points2D))
                if image.points2D[i].has_point3D()]
-        self.point_ids = set(pts)
+        self.point_ids = {(tag, p) for p in pts}
         self.depth = None
         self.conf_mask = None
 
@@ -52,10 +55,11 @@ class View:
         return self.R[2]  # viewing direction in world
 
 
-def sparse_depths(view, rec):
+def sparse_depths(view, rec=None):
     if not view.point_ids:
         return np.array([1.0])
-    X = np.array([rec.points3D[i].xyz for i in view.point_ids])
+    rec = view.rec if view.rec is not None else rec
+    X = np.array([rec.points3D[i].xyz for _, i in view.point_ids])
     z = (X @ view.R.T + view.t)[:, 2]
     return z[z > 0]
 
@@ -157,6 +161,91 @@ def stereo_depth(ref, src, rec):
     return D
 
 
+# ---------------------------------------------------------------- plane-sweep stereo
+def _box(x, r):
+    return cv2.boxFilter(x, -1, (2 * r + 1, 2 * r + 1), normalize=True,
+                         borderType=cv2.BORDER_REFLECT)
+
+
+def planesweep_depth(ref, srcs, rec=None, scale=0.5, n_planes=96, win=3, min_ncc=0.5,
+                     min_std=2.0, margin=0.02, excl=4, stats=None):
+    """Depth for `ref` by sweeping fronto-parallel planes through `srcs` (any motion).
+
+    Unlike rectified stereo this works when the camera walks forward (epipole inside
+    the image). Matching cost is ZNCC over a (2*win+1)^2 window, which ignores the
+    brightness/exposure changes phones make between frames. Per plane, each source's
+    cost is computed and the best two are averaged (robust to one source being occluded).
+    """
+    z = sparse_depths(ref, rec)
+    zmin, zmax = np.percentile(z, 2) * 0.7, np.percentile(z, 98) * 1.4
+    inv = np.linspace(1.0 / zmin, 1.0 / zmax, n_planes)  # uniform in inverse depth
+    h, w = int(ref.h * scale), int(ref.w * scale)
+    S = np.diag([scale, scale, 1.0])
+    Kr = S @ ref.K
+    Kr_inv = np.linalg.inv(Kr)
+    I = cv2.resize(cv2.cvtColor(ref.img, cv2.COLOR_BGR2GRAY), (w, h),
+                   interpolation=cv2.INTER_AREA).astype(np.float32)
+    muI = _box(I, win)
+    sdI = np.sqrt(np.maximum(_box(I * I, win) - muI * muI, 0))
+    textured = sdI > min_std
+    src_data = []
+    for s_ in srcs:
+        J = cv2.resize(cv2.cvtColor(s_.img, cv2.COLOR_BGR2GRAY), (w, h),
+                       interpolation=cv2.INTER_AREA).astype(np.float32)
+        R = s_.R @ ref.R.T
+        t = s_.t - R @ ref.t
+        src_data.append((J, S @ s_.K, R, t))
+    ones = np.ones((h, w), np.float32)
+    best = np.full((h, w), np.inf, np.float32)
+    best_i = np.zeros((h, w), np.int32)
+    costs = np.empty((n_planes, h, w), np.float32)
+    n = np.array([0.0, 0.0, 1.0])
+    for k, idep in enumerate(inv):
+        per_src = []
+        for J, Ks, R, t in src_data:
+            H = Ks @ (R + np.outer(t, n) * idep) @ Kr_inv  # ref pixel -> src pixel
+            Jw = cv2.warpPerspective(J, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            valid = cv2.warpPerspective(ones, H, (w, h), flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
+                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            muJ = _box(Jw, win)
+            sdJ = np.sqrt(np.maximum(_box(Jw * Jw, win) - muJ * muJ, 0))
+            ncc = (_box(I * Jw, win) - muI * muJ) / (sdI * sdJ + 1e-3)
+            c = 1.0 - ncc
+            c[(valid < 0.5) | (sdJ < min_std)] = 2.0
+            per_src.append(c)
+        P = np.sort(np.stack(per_src), axis=0)
+        cost = P[:2].mean(0) if len(per_src) >= 2 else P[0]
+        costs[k] = cost
+        upd = cost < best
+        best[upd] = cost[upd]
+        best_i[upd] = k
+    # sub-plane refinement (parabola through neighbours, in inverse depth)
+    k0 = np.clip(best_i, 1, n_planes - 2)
+    yy, xx = np.mgrid[0:h, 0:w]
+    cm, c0, cp = costs[k0 - 1, yy, xx], costs[k0, yy, xx], costs[k0 + 1, yy, xx]
+    denom = cm - 2 * c0 + cp
+    with np.errstate(divide="ignore", invalid="ignore"):
+        off = np.where(np.abs(denom) > 1e-6, 0.5 * (cm - cp) / denom, 0.0)
+    off = np.clip(off, -0.5, 0.5)
+    step = inv[1] - inv[0]
+    idep = inv[k0] + off * step
+    # confidence: good match, textured, not at the sweep's ends, clearly better than far planes
+    far = costs.copy()
+    for d in range(-excl, excl + 1):  # a broad, correct minimum is not ambiguity
+        far[np.clip(best_i + d, 0, n_planes - 1), yy, xx] = np.inf
+    second = far.min(0)
+    c_match = best < 1.0 - min_ncc
+    c_inside = (best_i > 0) & (best_i < n_planes - 1)
+    c_unique = (second - best) > margin
+    ok = c_match & textured & c_inside & c_unique
+    if stats is not None:
+        stats.update(match=c_match.mean(), textured=textured.mean(), inside=c_inside.mean(),
+                     unique=c_unique.mean(), anysrc=(best < 2.0).mean(), ok=ok.mean())
+    D = np.where(ok, 1.0 / np.maximum(idep, 1e-9), 0).astype(np.float32)
+    return cv2.resize(D, (ref.w, ref.h), interpolation=cv2.INTER_NEAREST)
+
+
 # ---------------------------------------------------------------- fusion
 def backproject(view, D, mask):
     ys, xs = np.nonzero(mask)
@@ -241,33 +330,55 @@ def merge_depths(A, B, rel_tol=0.02):
 
 
 def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_frac=0.0015,
-            rel_tol=0.015, min_agree=2, max_views=None, n_partners=2):
+            rel_tol=0.015, min_agree=2, max_views=None, n_partners=2, extra_sparse=(),
+            method="sweep"):
+    """extra_sparse: sub-models already aligned into the main model's frame (see
+    sfm.attach_submodels); their frames that the main model lacks are added as views."""
     t0 = time.time()
     out_dir.mkdir(parents=True, exist_ok=True)
     rec = pycolmap.Reconstruction(str(sparse_dir))
     imgs = sorted([im for im in rec.images.values() if im.has_pose], key=lambda im: im.name)
     if max_views:
         imgs = imgs[:: max(1, len(imgs) // max_views)]
-    views = [View(im, rec.cameras[im.camera_id], image_dir, scale) for im in imgs]
+    views = [View(im, rec.cameras[im.camera_id], image_dir, scale, rec, 0) for im in imgs]
+    have = {v.name for v in views}
+    for tag, extra_dir in enumerate(extra_sparse, start=1):
+        er = pycolmap.Reconstruction(str(extra_dir))
+        added = [View(im, er.cameras[im.camera_id], image_dir, scale, er, tag)
+                 for im in sorted(er.images.values(), key=lambda im: im.name)
+                 if im.has_pose and im.name not in have]
+        # keep the sub-model's overlap frames too: they are its stereo/consistency partners
+        overlap = [View(im, er.cameras[im.camera_id], image_dir, scale, er, tag)
+                   for im in er.images.values() if im.has_pose and im.name in have]
+        for v in overlap:
+            v.depth_only_support = True
+        views += added + overlap
+        have |= {v.name for v in added}
+        print(f"[mvs] attached sub-model {extra_dir.name}: +{len(added)} new frames", flush=True)
     print(f"[mvs] {len(views)} views loaded {time.time()-t0:.0f}s", flush=True)
     stereo, neigh, med = choose_partners(views, rec)
     for i, v in enumerate(views):
-        got = 0
-        for partner in stereo.get(v.id, []):
-            D = stereo_depth(v, partner, rec)
-            if D is None or (D > 0).mean() < 0.05:
-                continue
-            v.depth = D if v.depth is None else merge_depths(v.depth, D)
-            got += 1
-            if got >= n_partners:
-                break
+        if method == "sweep":  # plane sweep: any camera motion, incl. walking forward
+            srcs = stereo.get(v.id, [])[:3] or neigh.get(v.id, [])[:3]
+            if srcs:
+                v.depth = planesweep_depth(v, srcs)
+        else:  # rectified SGBM: fast, but only for sideways / orbiting motion
+            got = 0
+            for partner in stereo.get(v.id, []):
+                D = stereo_depth(v, partner, rec)
+                if D is None or (D > 0).mean() < 0.05:
+                    continue
+                v.depth = D if v.depth is None else merge_depths(v.depth, D)
+                got += 1
+                if got >= n_partners:
+                    break
         if i % 25 == 0:
             cov = 0 if v.depth is None else (v.depth > 0).mean()
             print(f"[mvs] stereo {i+1}/{len(views)} coverage={cov:.2f} {time.time()-t0:.0f}s", flush=True)
     allP, allC, cov_raw, cov_fused = [], [], [], []
     for v in views:
-        if v.depth is None:
-            continue
+        if v.depth is None or getattr(v, "depth_only_support", False):
+            continue  # overlap copies only serve as partners for a sub-model's new frames
         m = consistency_mask(v, neigh.get(v.id, []), rel_tol, min_agree)
         cov_raw.append((v.depth > 0).mean()); cov_fused.append(m.mean())
         P, C = backproject(v, v.depth, m)
@@ -288,7 +399,8 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
     # cameras for the viewer
     cams = [{"name": v.name, "R": v.R.tolist(), "t": v.t.tolist(), "C": v.C.tolist(),
              "fx": float(v.K[0, 0]), "fy": float(v.K[1, 1]), "w": v.w, "h": v.h}
-            for v in views]
+            for v in sorted(views, key=lambda v: v.name)
+            if not getattr(v, "depth_only_support", False)]
     (out_dir / "cameras.json").write_text(json.dumps(cams))
     print(f"[mvs] wrote {out_dir/'dense.ply'} in {time.time()-t0:.0f}s")
     return P, C, views

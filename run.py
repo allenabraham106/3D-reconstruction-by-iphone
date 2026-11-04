@@ -28,6 +28,9 @@ def main():
                     help="approx. phone height above the floor while filming (sets metric scale)")
     ap.add_argument("--arkit", action="store_true", help="input is an iOS capture-app folder")
     ap.add_argument("--stereo-scale", type=float, default=1.0)
+    ap.add_argument("--stereo", choices=["sweep", "sgbm"], default="sweep",
+                    help="sweep: plane sweep, works for any motion (default); "
+                         "sgbm: faster rectified stereo, only for sideways/orbit captures")
     a = ap.parse_args()
 
     name = a.input.stem if a.input.is_file() else a.input.name
@@ -48,10 +51,12 @@ def main():
             extract(a.input, img_dir, a.frames, a.max_side)
         else:
             img_dir = a.input
-        from sfm import run_sfm
-        run_sfm(img_dir, out / "sfm")
+        from sfm import attach_submodels, run_sfm
+        rec = run_sfm(img_dir, out / "sfm")
+        extra = attach_submodels(rec, out / "sfm")  # bridge pieces SfM couldn't join
         from mvs import run_mvs
-        run_mvs(out / "sfm" / "sparse_best", img_dir, out / "dense", scale=a.stereo_scale)
+        run_mvs(out / "sfm" / "sparse_best", img_dir, out / "dense", scale=a.stereo_scale,
+                extra_sparse=extra, method=a.stereo)
         ply, cams = out / "dense" / "dense.ply", out / "dense" / "cameras.json"
         metric = False
 

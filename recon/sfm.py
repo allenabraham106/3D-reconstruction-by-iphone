@@ -41,6 +41,55 @@ def write_position_priors(db_path, priors, sigma=0.05):
     return n
 
 
+def attach_submodels(main, work: Path, min_shared=5, max_center_err_frac=0.02):
+    """Level-1 gap bridging: align leftover sub-models into the main model's frame.
+
+    Incremental SfM often splits a hard video into pieces (a dark corner, a turn on the
+    spot). Pieces that share frames with the main model can be aligned exactly through
+    those frames' camera centres. Returns the dirs of aligned sub-models that add frames.
+    """
+    main_names = {im.name for im in main.images.values()}
+    main_C = {im.name: im.projection_center() for im in main.images.values()}
+    extent = np.linalg.norm(np.ptp(np.array(list(main_C.values())), 0))
+    attached, covered = [], set(main_names)
+    cands = []
+    for d in sorted(work.glob("sparse*/[0-9]*")):
+        r = pycolmap.Reconstruction(str(d))
+        names = {im.name for im in r.images.values()}
+        new, shared = names - covered, names & main_names
+        if len(new) and len(shared) >= min_shared:
+            cands.append((len(new), d, r, shared))
+    for _, d, r, shared in sorted(cands, key=lambda c: -c[0]):
+        new = {im.name for im in r.images.values()} - covered
+        if not new:
+            continue
+        src = np.array([next(im for im in r.images.values() if im.name == n).projection_center()
+                        for n in sorted(shared)])
+        dst = np.array([main_C[n] for n in sorted(shared)])
+        ransac = pycolmap.RANSACOptions()
+        ransac.max_error = max_center_err_frac * extent
+        sim = pycolmap.estimate_sim3d_robust(src, dst, ransac)
+        if isinstance(sim, dict):  # some pycolmap versions return {"tgt_from_src": ..., ...}
+            sim = sim.get("tgt_from_src")
+        if sim is None:
+            continue
+        r.transform(sim)
+        err = np.linalg.norm(np.array([next(im for im in r.images.values() if im.name == n)
+                                       .projection_center() for n in sorted(shared)]) - dst, axis=1)
+        rel = np.median(err) / extent
+        if rel > max_center_err_frac:
+            print(f"[sfm] sub-model {d.parent.name}/{d.name}: alignment too loose ({rel:.1%}), skipped")
+            continue
+        out = work / f"attached_{len(attached)}"
+        out.mkdir(exist_ok=True)
+        r.write(out)
+        attached.append(out)
+        covered |= new
+        print(f"[sfm] attached {d.parent.name}/{d.name}: +{len(new)} frames via {len(shared)} shared "
+              f"(median centre error {rel:.2%} of scene)")
+    return attached
+
+
 def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600,
             exhaustive_limit: int = 400, position_priors=None, max_features: int = 8192,
             ba_ratio: float = 1.4):
