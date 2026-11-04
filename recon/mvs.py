@@ -167,43 +167,38 @@ def _box(x, r):
                          borderType=cv2.BORDER_REFLECT)
 
 
-def planesweep_depth(ref, srcs, rec=None, scale=0.5, n_planes=96, win=3, min_ncc=0.5,
-                     min_std=2.0, margin=0.02, excl=4, stats=None):
-    """Depth for `ref` by sweeping fronto-parallel planes through `srcs` (any motion).
+def _prep_gray(clahe):
+    """Optional local-contrast boost so detail in dark regions survives the texture test."""
+    if not clahe:
+        return lambda g: g
+    op = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    return lambda g: op.apply(g)
 
-    Unlike rectified stereo this works when the camera walks forward (epipole inside
-    the image). Matching cost is ZNCC over a (2*win+1)^2 window, which ignores the
-    brightness/exposure changes phones make between frames. Per plane, each source's
-    cost is computed and the best two are averaged (robust to one source being occluded).
-    """
-    z = sparse_depths(ref, rec)
-    zmin, zmax = np.percentile(z, 2) * 0.7, np.percentile(z, 98) * 1.4
-    inv = np.linspace(1.0 / zmin, 1.0 / zmax, n_planes)  # uniform in inverse depth
-    h, w = int(ref.h * scale), int(ref.w * scale)
-    S = np.diag([scale, scale, 1.0])
-    Kr = S @ ref.K
-    Kr_inv = np.linalg.inv(Kr)
-    I = cv2.resize(cv2.cvtColor(ref.img, cv2.COLOR_BGR2GRAY), (w, h),
-                   interpolation=cv2.INTER_AREA).astype(np.float32)
-    muI = _box(I, win)
-    sdI = np.sqrt(np.maximum(_box(I * I, win) - muI * muI, 0))
-    textured = sdI > min_std
-    src_data = []
-    for s_ in srcs:
-        J = cv2.resize(cv2.cvtColor(s_.img, cv2.COLOR_BGR2GRAY), (w, h),
-                       interpolation=cv2.INTER_AREA).astype(np.float32)
-        R = s_.R @ ref.R.T
-        t = s_.t - R @ ref.t
-        src_data.append((J, S @ s_.K, R, t))
+
+def planesweep_multiscale(ref, srcs, rec=None, scales=(0.5, 0.25), **kw):
+    """Fine-to-coarse: keep fine depth where it exists, fill its holes from coarser sweeps.
+
+    At low resolution the same window spans more of a weakly textured surface (floors,
+    walls), so matches succeed where the fine pass found nothing."""
+    D = None
+    for sc in scales:
+        Ds = planesweep_depth(ref, srcs, rec, scale=sc, **kw)
+        D = Ds if D is None else np.where(D > 0, D, Ds)
+    return D
+
+
+def _sweep_family(I, muI, sdI, src_data, Kr_inv, n_c, params, to_dist, win, min_std, h, w):
+    """Sweep one family of parallel planes n_c . X = dist (ref-camera coords).
+
+    params are sampled uniformly (inverse depth for fronto-parallel, height for ground
+    planes); to_dist maps a param to the plane offset. Returns the cost volume."""
     ones = np.ones((h, w), np.float32)
-    best = np.full((h, w), np.inf, np.float32)
-    best_i = np.zeros((h, w), np.int32)
-    costs = np.empty((n_planes, h, w), np.float32)
-    n = np.array([0.0, 0.0, 1.0])
-    for k, idep in enumerate(inv):
+    costs = np.empty((len(params), h, w), np.float32)
+    for k, p_ in enumerate(params):
+        dist = to_dist(p_)
         per_src = []
         for J, Ks, R, t in src_data:
-            H = Ks @ (R + np.outer(t, n) * idep) @ Kr_inv  # ref pixel -> src pixel
+            H = Ks @ (R + np.outer(t, n_c) / dist) @ Kr_inv  # ref pixel -> src pixel
             Jw = cv2.warpPerspective(J, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
                                      borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             valid = cv2.warpPerspective(ones, H, (w, h), flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
@@ -215,35 +210,137 @@ def planesweep_depth(ref, srcs, rec=None, scale=0.5, n_planes=96, win=3, min_ncc
             c[(valid < 0.5) | (sdJ < min_std)] = 2.0
             per_src.append(c)
         P = np.sort(np.stack(per_src), axis=0)
-        cost = P[:2].mean(0) if len(per_src) >= 2 else P[0]
-        costs[k] = cost
-        upd = cost < best
-        best[upd] = cost[upd]
-        best_i[upd] = k
-    # sub-plane refinement (parabola through neighbours, in inverse depth)
-    k0 = np.clip(best_i, 1, n_planes - 2)
+        costs[k] = P[:2].mean(0) if len(per_src) >= 2 else P[0]
+    return costs
+
+
+def _pick(costs, params, excl, margin, min_ncc):
+    """Winner per pixel + parabola refinement + uniqueness. Returns (best, param, ok)."""
+    n = len(params)
+    best_i = costs.argmin(0)
+    h, w = best_i.shape
     yy, xx = np.mgrid[0:h, 0:w]
+    best = costs[best_i, yy, xx]
+    k0 = np.clip(best_i, 1, n - 2)
     cm, c0, cp = costs[k0 - 1, yy, xx], costs[k0, yy, xx], costs[k0 + 1, yy, xx]
     denom = cm - 2 * c0 + cp
     with np.errstate(divide="ignore", invalid="ignore"):
         off = np.where(np.abs(denom) > 1e-6, 0.5 * (cm - cp) / denom, 0.0)
-    off = np.clip(off, -0.5, 0.5)
-    step = inv[1] - inv[0]
-    idep = inv[k0] + off * step
-    # confidence: good match, textured, not at the sweep's ends, clearly better than far planes
+    off = np.nan_to_num(np.clip(off, -0.5, 0.5))
+    param = params[k0] + off * (params[1] - params[0])
     far = costs.copy()
     for d in range(-excl, excl + 1):  # a broad, correct minimum is not ambiguity
-        far[np.clip(best_i + d, 0, n_planes - 1), yy, xx] = np.inf
+        far[np.clip(best_i + d, 0, n - 1), yy, xx] = np.inf
     second = far.min(0)
-    c_match = best < 1.0 - min_ncc
-    c_inside = (best_i > 0) & (best_i < n_planes - 1)
-    c_unique = (second - best) > margin
-    ok = c_match & textured & c_inside & c_unique
+    ok = (best < 1.0 - min_ncc) & (best_i > 0) & (best_i < n - 1) & ((second - best) > margin)
+    return best, param, ok
+
+
+def planesweep_depth(ref, srcs, rec=None, scale=0.5, n_planes=96, win=3, min_ncc=0.5,
+                     min_std=2.0, margin=0.02, excl=4, edge_tol=0.05, clahe=False,
+                     up_world=None, n_ground=64, stats=None):
+    """Depth for `ref` by sweeping planes through `srcs` (works for any camera motion).
+
+    Two plane families: fronto-parallel (facing the camera; walls, objects) and, if
+    up_world is given, ground-parallel (horizontal; floors, table tops). A floor seen
+    at a grazing angle never fits a fronto-parallel window, so without the second
+    family floors come out empty (Gallup et al. 2007). Matching cost is ZNCC over a
+    (2*win+1)^2 window, invariant to the exposure changes phones make between frames;
+    the best two of the sources' costs are averaged (robust to one being occluded).
+    """
+    z = sparse_depths(ref, rec)
+    zmin, zmax = np.percentile(z, 2) * 0.7, np.percentile(z, 98) * 1.4
+    h, w = int(ref.h * scale), int(ref.w * scale)
+    S = np.diag([scale, scale, 1.0])
+    Kr = S @ ref.K
+    Kr_inv = np.linalg.inv(Kr)
+    prep = _prep_gray(clahe)
+    I = prep(cv2.resize(cv2.cvtColor(ref.img, cv2.COLOR_BGR2GRAY), (w, h),
+                        interpolation=cv2.INTER_AREA)).astype(np.float32)
+    muI = _box(I, win)
+    sdI = np.sqrt(np.maximum(_box(I * I, win) - muI * muI, 0))
+    textured = sdI > min_std
+    src_data = []
+    for s_ in srcs:
+        J = prep(cv2.resize(cv2.cvtColor(s_.img, cv2.COLOR_BGR2GRAY), (w, h),
+                            interpolation=cv2.INTER_AREA)).astype(np.float32)
+        R = s_.R @ ref.R.T
+        src_data.append((J, S @ s_.K, R, s_.t - R @ ref.t))
+    # pixel rays (z = 1) in ref camera coords
+    yy, xx = np.mgrid[0:h, 0:w]
+    rays = np.stack([xx, yy, np.ones_like(xx)], -1).astype(np.float64) @ Kr_inv.T
+
+    # family 1: fronto-parallel, uniform in inverse depth; plane z = 1/p
+    fp = np.linspace(1.0 / zmin, 1.0 / zmax, n_planes)
+    c1 = _sweep_family(I, muI, sdI, src_data, Kr_inv, np.array([0.0, 0.0, 1.0]), fp,
+                       lambda p_: 1.0 / p_, win, min_std, h, w)
+    best, p1, ok = _pick(c1, fp, excl, margin, min_ncc)
+    depth = np.where(ok, 1.0 / np.maximum(p1, 1e-9), 0.0)
+    fam = np.zeros((h, w), np.uint8)
+
+    # family 2: ground-parallel planes (heights along gravity), if we know "up"
+    if up_world is not None and n_ground > 0:
+        n_c = ref.R @ (-np.asarray(up_world, float))  # unit normal pointing down, in cam coords
+        n_c /= np.linalg.norm(n_c)
+        # signed distances of the sparse points' planes along n_c (floor is below: > 0)
+        Xc = np.array([view_pt for view_pt in _sparse_cam_points(ref, rec)])
+        hts = Xc @ n_c if len(Xc) else np.array([1.0])
+        hts = hts[hts > 0.05 * zmin]
+        if len(hts) > 20:
+            lo_h, hi_h = np.percentile(hts, 2) * 0.8, np.percentile(hts, 99.5) * 1.15
+            gp = np.linspace(lo_h, hi_h, n_ground)
+            c2 = _sweep_family(I, muI, sdI, src_data, Kr_inv, n_c, gp, lambda p_: p_,
+                               win, min_std, h, w)
+            best2, p2, ok2 = _pick(c2, gp, excl, margin, min_ncc)
+            denom = rays @ n_c  # z = dist / (n_c . ray)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                z2 = np.where(denom > 0.05, p2 / denom, 0.0)
+            ok2 &= (z2 > zmin) & (z2 < zmax)
+            take = ok2 & (~ok | (best2 < best))
+            depth = np.where(take, z2, depth)
+            fam[take] = 1
+            ok = ok | ok2
+            best = np.where(take, best2, best)
+    ok &= textured
     if stats is not None:
-        stats.update(match=c_match.mean(), textured=textured.mean(), inside=c_inside.mean(),
-                     unique=c_unique.mean(), anysrc=(best < 2.0).mean(), ok=ok.mean())
-    D = np.where(ok, 1.0 / np.maximum(idep, 1e-9), 0).astype(np.float32)
+        stats.update(ok=ok.mean(), ground_share=(fam[ok] == 1).mean() if ok.any() else 0.0)
+    D = np.where(ok, depth, 0).astype(np.float32)
+    if edge_tol > 0:
+        D = drop_flying_pixels(D, edge_tol)
     return cv2.resize(D, (ref.w, ref.h), interpolation=cv2.INTER_NEAREST)
+
+
+def _sparse_cam_points(view, rec=None):
+    rec = view.rec if view.rec is not None else rec
+    if not view.point_ids:
+        return np.zeros((0, 3))
+    X = np.array([rec.points3D[i].xyz for _, i in view.point_ids])
+    return X @ view.R.T + view.t
+
+
+def drop_flying_pixels(D, tol=0.05):
+    """Remove depth at discontinuities ("flying pixels" that streak along view rays).
+
+    On any plane, inverse depth is affine in image coordinates, so its second
+    difference is ~0 even for a floor seen at a grazing angle; at an object boundary it
+    spikes. A pixel is dropped if the second difference of inverse depth (horizontal or
+    vertical), relative to its own inverse depth, exceeds tol. Missing neighbours fall
+    back to a first-difference test with a looser threshold."""
+    valid = D > 0
+    inv = np.where(valid, 1.0 / np.maximum(D, 1e-9), 0).astype(np.float64)
+    bad = np.zeros_like(valid)
+    for axis in (0, 1):
+        a = np.roll(inv, 1, axis); b = np.roll(inv, -1, axis)
+        va = np.roll(valid, 1, axis); vb = np.roll(valid, -1, axis)
+        both = valid & va & vb
+        second = np.abs(a + b - 2 * inv) / np.maximum(inv, 1e-12)
+        bad |= both & (second > tol)
+        one = valid & (va ^ vb)
+        nb = np.where(va, a, b)
+        bad |= one & (np.abs(nb - inv) / np.maximum(inv, 1e-12) > 4 * tol)
+    out = D.copy()
+    out[bad] = 0
+    return out
 
 
 # ---------------------------------------------------------------- fusion
@@ -316,6 +413,34 @@ def write_ply(path, P, C):
         fh.write(rec.tobytes())
 
 
+def sweep_sources(v, views_by_tag, order, stereo, med, max_src=4, steps=(2, 3, 5)):
+    """Sources for plane-sweeping `v`: its stereo partners plus video-time neighbours.
+
+    Partner selection was tuned on orbit captures; in a walk-through many frames get
+    only one partner. The frames a few steps before/after (same sub-model) usually see
+    the same surfaces with useful parallax, so they are added when the viewing angle
+    is < 30 deg and the camera actually moved (baseline > 1% of scene depth)."""
+    cands = list(stereo.get(v.id, []))
+    seq = views_by_tag[v.id[0]]
+    i = order[v.id]
+    for k in steps:
+        for j in (i - k, i + k):
+            if 0 <= j < len(seq):
+                cands.append(seq[j])
+    out, seen = [], {v.id}
+    scored = []
+    for u in cands:
+        if u.id in seen:
+            continue
+        seen.add(u.id)
+        ang = np.degrees(np.arccos(np.clip(v.axis @ u.axis, -1, 1)))
+        ratio = np.linalg.norm(v.C - u.C) / max(med.get(v.id, 1.0), 1e-9)
+        if ang < 30 and ratio > 0.01:
+            scored.append((abs(np.log(ratio / 0.07)), u))
+    scored.sort(key=lambda x: x[0])
+    return [u for _, u in scored[:max_src]]
+
+
 def merge_depths(A, B, rel_tol=0.02):
     """Fill A's holes from B; where both have depth but disagree, trust neither."""
     out = A.copy()
@@ -331,7 +456,7 @@ def merge_depths(A, B, rel_tol=0.02):
 
 def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_frac=0.0015,
             rel_tol=0.015, min_agree=2, max_views=None, n_partners=2, extra_sparse=(),
-            method="sweep"):
+            method="sweep", temporal_sources=False):
     """extra_sparse: sub-models already aligned into the main model's frame (see
     sfm.attach_submodels); their frames that the main model lacks are added as views."""
     t0 = time.time()
@@ -357,11 +482,20 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
         print(f"[mvs] attached sub-model {extra_dir.name}: +{len(added)} new frames", flush=True)
     print(f"[mvs] {len(views)} views loaded {time.time()-t0:.0f}s", flush=True)
     stereo, neigh, med = choose_partners(views, rec)
+    by_tag = {}
+    for v in sorted(views, key=lambda v: v.name):
+        by_tag.setdefault(v.id[0], []).append(v)
+    order = {v.id: i for seq in by_tag.values() for i, v in enumerate(seq)}
+    # gravity guess for ground-parallel sweeping: phones are held upright, so the
+    # image's up axis (camera -Y) averaged over the capture points roughly up
+    up_world = -np.mean([v.R[1] for v in views if v.rec is rec] or [v.R[1] for v in views], 0)
+    up_world = up_world / np.linalg.norm(up_world) if np.linalg.norm(up_world) > 0.3 else None
     for i, v in enumerate(views):
         if method == "sweep":  # plane sweep: any camera motion, incl. walking forward
-            srcs = stereo.get(v.id, [])[:3] or neigh.get(v.id, [])[:3]
-            if srcs:
-                v.depth = planesweep_depth(v, srcs)
+            srcs = sweep_sources(v, by_tag, order, stereo, med) if temporal_sources else \
+                (stereo.get(v.id, [])[:3] or neigh.get(v.id, [])[:3])
+            if srcs:  # fronto + ground planes, fine->coarse, local-contrast boost
+                v.depth = planesweep_multiscale(v, srcs, up_world=up_world, clahe=True)
         else:  # rectified SGBM: fast, but only for sideways / orbiting motion
             got = 0
             for partner in stereo.get(v.id, []):
