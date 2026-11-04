@@ -34,6 +34,7 @@ struct FrameRecord: Codable {
 ///       transforms.json               nerfstudio format: poses + intrinsics for every frame
 ///       frames.jsonl                  same records, appended live (survives a crash)
 ///       mesh.ply                      ARKit scene mesh in world coordinates (LiDAR phones)
+///       arkit_points.ply              ARKit feature points, sparse metric cloud (every iPhone)
 ///       metadata.json                 device, app version, counts
 final class CaptureWriter {
     let directory: URL
@@ -55,6 +56,10 @@ final class CaptureWriter {
     private let ciContext = CIContext()
     private let jsonl: FileHandle
     private var records: [FrameRecord] = []   // queue only
+    /// ARKit's tracked visual feature points, keyed by ARKit's persistent identifier, latest
+    /// estimate wins. Works on every iPhone, so non-LiDAR phones (iPhone 17, 17 Air) still get a
+    /// metric sparse point cloud to seed COLMAP / Gaussian splatting.
+    private var featurePoints: [UInt64: SIMD3<Float>] = [:]   // queue only
     private let createdAt = Date()
 
     init(root: URL, settings: CaptureSettings, hasDepth: Bool, deviceInfo: DeviceInfo) throws {
@@ -91,6 +96,8 @@ final class CaptureWriter {
         if hasDepth, let sceneDepth = frame.sceneDepth {
             depth = DepthCopy(depth: sceneDepth.depthMap, confidence: sceneDepth.confidenceMap)
         }
+        let featureIDs = frame.rawFeaturePoints?.identifiers ?? []
+        let featureXYZ = frame.rawFeaturePoints?.points ?? []
 
         let camera = frame.camera
         let K = camera.intrinsics
@@ -127,6 +134,7 @@ final class CaptureWriter {
                         }
                     }
                     records.append(record)
+                    for (id, p) in zip(featureIDs, featureXYZ) { featurePoints[id] = p }
                     var line = try JSONEncoder().encode(record)
                     line.append(0x0A)
                     jsonl.write(line)
@@ -147,6 +155,9 @@ final class CaptureWriter {
                 try writeTransforms(sorted)
                 if let mesh, !mesh.isEmpty {
                     try mesh.writePLY(to: directory.appendingPathComponent("mesh.ply"))
+                }
+                if !featurePoints.isEmpty {
+                    try writeFeaturePoints(to: directory.appendingPathComponent("arkit_points.ply"))
                 }
                 try writeMetadata(frames: sorted.count, meshFaces: mesh?.faceCount ?? 0)
                 completion(.success(directory))
@@ -180,6 +191,9 @@ final class CaptureWriter {
         if hasDepth {
             root["depth_unit_scale_factor"] = 0.001
         }
+        if !featurePoints.isEmpty {
+            root["ply_file_path"] = "arkit_points.ply"   // nerfstudio splatfacto uses this as its initial point cloud
+        }
         if let first = frames.first {
             root["fl_x"] = first.fl_x
             root["fl_y"] = first.fl_y
@@ -196,6 +210,20 @@ final class CaptureWriter {
         try data.write(to: directory.appendingPathComponent("transforms.json"))
     }
 
+    /// Binary PLY of ARKit feature points (world frame, metres).
+    private func writeFeaturePoints(to url: URL) throws {
+        let points = Array(featurePoints.values)
+        var data = Data(("ply\nformat binary_little_endian 1.0\ncomment PhoneScan ARKit feature points, world frame, metres\n"
+                         + "element vertex \(points.count)\nproperty float x\nproperty float y\nproperty float z\nend_header\n").utf8)
+        data.reserveCapacity(data.count + points.count * 12)
+        for p in points {
+            for f in [p.x, p.y, p.z] {
+                withUnsafeBytes(of: f.bitPattern.littleEndian) { data.append(contentsOf: $0) }
+            }
+        }
+        try data.write(to: url)
+    }
+
     private func writeMetadata(frames: Int, meshFaces: Int) throws {
         struct Metadata: Codable {
             var format_version = 1
@@ -204,6 +232,7 @@ final class CaptureWriter {
             var frame_count: Int
             var has_depth: Bool
             var mesh_faces: Int
+            var arkit_feature_points: Int
             var device: DeviceInfo
             var keyframe_min_translation_m: Float
             var keyframe_min_rotation_deg: Float
@@ -215,6 +244,7 @@ final class CaptureWriter {
             frame_count: frames,
             has_depth: hasDepth,
             mesh_faces: meshFaces,
+            arkit_feature_points: featurePoints.count,
             device: deviceInfo,
             keyframe_min_translation_m: settings.minTranslation,
             keyframe_min_rotation_deg: settings.minRotation * 180 / .pi

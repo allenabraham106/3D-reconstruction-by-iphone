@@ -17,7 +17,7 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 statusBar
                 if !capture.hasLiDAR {
-                    Banner(text: "No LiDAR on this iPhone: saving RGB + ARKit poses only (no depth or mesh).")
+                    Banner(text: "No LiDAR on this iPhone (e.g. iPhone 17): saving photos, ARKit poses and feature points. Depth and mesh need a Pro model.")
                 }
                 if let message = capture.message {
                     Banner(text: message)
