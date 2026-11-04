@@ -2,9 +2,11 @@
 
 Walk through a room or floor with an iPhone. Get a **colored 3D mesh**, the camera path, and a **metric, gravity-aligned map a robot can navigate with** (ROS nav2 occupancy grid + 3D voxels).
 
-![office](docs/img/real_office_mesh.png)
+[![office fly-around](docs/img/office_flyaround.gif)](docs/video/office_flyaround.mp4)
 
-*A robotics lab filmed with an iPhone 17 (85 s of HDR video, Camera app, nothing special): 277/277 frames placed, a 1.95 M-triangle mesh. The floor with its red tape, desks, chairs, cabinets, whiteboard and the people at their desks are all there. The camera path is blue, the camera is white.*
+*A robotics lab filmed with an iPhone 17 (85 s of HDR video, Camera app, nothing special): 277/277 frames placed, a 1.95 M-triangle mesh. The floor with its red tape, desks, chairs, cabinets, whiteboard and the people at their desks are all there. The white camera frustum replays the walk. [Full-quality MP4](docs/video/office_flyaround.mp4); render your own with `tools/record_video.js`.*
+
+![office mesh](docs/img/real_office_mesh.png)
 
 This reproduces the kind of result in the NVIDIA-stack demo (ViPE-style pose and dense-depth reconstruction from phone video). It runs on a normal laptop CPU, with no GPU and no downloaded neural-network weights.
 
