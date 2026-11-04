@@ -1,0 +1,43 @@
+name: PhoneScan
+
+on:
+  push:
+    paths: ["ios/**", "tools/**", ".github/workflows/phonescan.yml"]
+  pull_request:
+    paths: ["ios/**", "tools/**", ".github/workflows/phonescan.yml"]
+  workflow_dispatch:
+
+jobs:
+  ios-build:
+    name: Build iOS app (unsigned)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode
+        run: xcodebuild -version
+      - name: Build for device
+        run: |
+          xcodebuild \
+            -project ios/PhoneScan.xcodeproj \
+            -scheme PhoneScan \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Upload unsigned .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneScan-unsigned
+          path: build/Build/Products/Debug-iphoneos/PhoneScan.app
+
+  tools-test:
+    name: Desktop tools tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pillow
+      - run: python3 tools/test_tools.py

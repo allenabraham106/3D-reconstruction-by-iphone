@@ -1,0 +1,10 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+# Python
+__pycache__/
+*.pyc
+# Captures received by tools/receive_server.py
+captures/
