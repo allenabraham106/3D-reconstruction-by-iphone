@@ -21,7 +21,51 @@ from mvs import remove_outliers, voxel_downsample, write_ply
 FLIP = np.diag([1.0, -1.0, -1.0])
 
 
+def load_transforms_json(cap: Path):
+    """nerfstudio-style transforms.json (c2w in OpenGL axes == ARKit camera axes, metres)."""
+    j = json.loads((cap / "transforms.json").read_text())
+    out = []
+    for i, f in enumerate(j["frames"]):
+        g = lambda k, d=None: f.get(k, j.get(k, d))
+        w, h = int(g("w")), int(g("h"))
+        K = np.array([[g("fl_x"), 0, g("cx", w / 2)], [0, g("fl_y", g("fl_x")), g("cy", h / 2)], [0, 0, 1.0]])
+        T = np.array(f["transform_matrix"], dtype=np.float64)  # row-major 4x4
+        Rwc = T[:3, :3] @ FLIP
+        C = T[:3, 3]
+        R = Rwc.T
+        e = {"index": i, "rgb": f["file_path"], "width": w, "height": h,
+             "K": K, "R": R, "t": -R @ C, "C": C}
+        if f.get("depth_file_path"):
+            e["depth"] = f["depth_file_path"]
+        conf = f.get("confidence_file_path") or f.get("confidence_path")
+        if conf:
+            e["confidence"] = conf
+        out.append(e)
+    return out
+
+
+def read_depth(cap: Path, f):
+    """Depth in metres + confidence (or None) for either capture format."""
+    path = cap / f["depth"]
+    if path.suffix == ".bin":
+        D = np.fromfile(path, dtype=np.float32).reshape(f["depth_height"], f["depth_width"])
+    else:  # 16-bit PNG in millimetres
+        D = cv2.imread(str(path), cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+    conf = None
+    if "confidence" in f:
+        cp = cap / f["confidence"]
+        conf = (np.fromfile(cp, dtype=np.uint8).reshape(D.shape) if cp.suffix == ".bin"
+                else cv2.imread(str(cp), cv2.IMREAD_UNCHANGED))
+        if conf is not None and conf.ndim == 3:
+            conf = conf[..., 0]
+        if conf is not None and conf.shape != D.shape:
+            conf = cv2.resize(conf, (D.shape[1], D.shape[0]), interpolation=cv2.INTER_NEAREST)
+    return D, conf
+
+
 def load_capture(cap: Path):
+    if (cap / "transforms.json").exists() and not (cap / "frames.jsonl").exists():
+        return load_transforms_json(cap)
     frames = [json.loads(l) for l in (cap / "frames.jsonl").read_text().splitlines() if l.strip()]
     out = []
     for f in frames:
@@ -40,11 +84,10 @@ def fuse_lidar(cap: Path, frames, out: Path, voxel=0.01, min_conf=2, max_depth=5
     for f in frames:
         if "depth" not in f:
             continue
-        dw, dh = f["depth_width"], f["depth_height"]
-        D = np.fromfile(cap / f["depth"], dtype=np.float32).reshape(dh, dw)
+        D, conf = read_depth(cap, f)
+        dh, dw = D.shape
         ok = np.isfinite(D) & (D > 0.1) & (D < max_depth)
-        if "confidence" in f:
-            conf = np.fromfile(cap / f["confidence"], dtype=np.uint8).reshape(dh, dw)
+        if conf is not None:
             ok &= conf >= min_conf
         img = cv2.imread(str(cap / f["rgb"]))
         h, w = img.shape[:2]
