@@ -21,6 +21,15 @@ Only `tools/fuse_depth.py` needs LiDAR.
 
 Requires iOS 17 or later and Xcode 16 or later.
 
+## Screens
+
+Mockups drawn from the SwiftUI layout (the app hasn't been built on a device yet).
+Full documentation: [`docs/PHONESCAN.md`](../docs/PHONESCAN.md).
+
+| iPhone 17 (no LiDAR) | Pro, recording with mesh | Captures | Settings |
+|---|---|---|---|
+| ![](../docs/images/05b-iphone17-recording.webp) | ![](../docs/images/02-recording.webp) | ![](../docs/images/06-library.webp) | ![](../docs/images/07-settings.webp) |
+
 ## Install on your iPhone
 
 1. Open `ios/PhoneScan.xcodeproj` in Xcode 16 or later on a Mac.
