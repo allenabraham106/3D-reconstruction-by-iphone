@@ -214,7 +214,8 @@ def find_glass_walls(Pw, Cw, z_band=(0.2, 2.2), thr=0.05, min_inliers=200, min_l
 
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
           robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2,
-          below_floor=0.05, obst_ratio=0.5, reach_radius=3.5, detect_glass=True):
+          below_floor=0.05, obst_ratio=0.5, reach_radius=3.5, detect_glass=True,
+          metric_scale=False):
     out.mkdir(parents=True, exist_ok=True)
     P, C = read_ply(ply)
     cams = json.loads(Path(cameras_json).read_text())
@@ -258,7 +259,9 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     Pw[:, 2] -= z0
     Cw[:, 2] -= z0
     cam_h = np.median(Cw[:, 2])
-    scale = 1.0 if metric else phone_height / cam_h
+    # metric: ARKit (scale + gravity known). metric_scale: scale known (e.g. ViPE's metric
+    # depth) but gravity still estimated from the floor. Otherwise: phone-height guess.
+    scale = 1.0 if (metric or metric_scale) else phone_height / cam_h
     Pw *= scale
     Cw *= scale
     # centre XY on the scene
@@ -411,7 +414,7 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
                         "probably a table or bed, not the ground.")
     for w in warnings:
         print("[robot_map] WARNING:", w)
-    meta = {"scale_applied": float(scale), "metric_source": "arkit" if metric else
+    meta = {"scale_applied": float(scale), "metric_source": "arkit" if metric else "input (metric depth)" if metric_scale else
             f"phone_height={phone_height}m", "floor_inlier_fraction": float(frac),
             "grid_cell_m": cell, "grid_size": [int(W), int(H)],
             "free_cells": int(free_mask.sum()), "free_cells_seen": int(seen_free.sum()),
