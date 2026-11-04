@@ -102,7 +102,8 @@ def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10, min_d
 
 
 def find_glass_walls(Pw, Cw, z_band=(0.2, 2.2), thr=0.05, min_inliers=200, min_len=1.5,
-                     behind_min=1.0, behind_ratio=1.0, max_walls=6, suppress=0.3, seed=0):
+                     behind_min=1.0, behind_ratio=1.0, max_walls=6, suppress=0.3, seed=0,
+                     gap_bin=0.1, cliff_frac=0.1, low_frac=0.05, low_len=0.5, beyond_frac=0.05):
     """Vertical planes (lines in top view) that look like glass: things are seen *behind*
     them, on the side the walker never was.
 
@@ -110,9 +111,10 @@ def find_glass_walls(Pw, Cw, z_band=(0.2, 2.2), thr=0.05, min_inliers=200, min_l
     or window has a frame/mullions (some points on the line) and the world behind it
     (many points beyond). Returns [(p0, p1, ratio_behind)] segment endpoints in XY.
 
-    EXPERIMENTAL (build(detect_glass=True)): on the real office it found the glass side
-    and nothing in the apartment, but placed the line ~1 m beyond the glass, inside the
-    see-through clutter -- stereo rarely puts points on the glass itself."""
+    The wall is placed at the density cliff where the room's contents end (stereo puts
+    almost nothing on glass), and only when that cliff is followed by >= 0.5 m of
+    near-empty space and then real geometry beyond; otherwise the line is skipped, so the
+    detector only draws walls it is confident about."""
     rng = np.random.default_rng(seed)
     z = Pw[:, 2]
     Q = Pw[(z > z_band[0]) & (z < z_band[1]), :2]
@@ -162,14 +164,57 @@ def find_glass_walls(Pw, Cw, z_band=(0.2, 2.2), thr=0.05, min_inliers=200, min_l
         within = (along > t0) & (along < t1)
         behind = within & (dist_r * walk_side < -behind_min)
         ratio = behind.sum() / max(inl.sum(), 1)
-        if ratio > behind_ratio:
-            walls.append((a + t0 * t_dir, a + t1 * t_dir, float(ratio)))
+        if ratio <= behind_ratio:
+            continue
+        # Where is the glass? Walking from the cameras outward: room contents (dense, the
+        # peak is furniture against the glass), then a sharp density cliff (stereo puts
+        # almost nothing on glass), a long low stretch (reflections, see-through haze),
+        # and the world beyond. Wall goes at the cliff -- only if all of that is clearly
+        # there; otherwise this line is skipped (no guess).
+        sd = dist_r[within] * walk_side                 # + = walker's side
+        cam_s = np.median(c_dist[span] * walk_side)
+        edges = np.arange(-4.0, cam_s + gap_bin, gap_bin)
+        hist, edges = np.histogram(sd, bins=edges)
+        room_side = edges[:-1] >= 0
+        if not room_side.any() or hist[room_side].max() < min_inliers:
+            continue
+        peak_k = np.flatnonzero(room_side)[np.argmax(hist[room_side])]
+        peak = hist[peak_k]
+        found = None
+        for k in range(peak_k - 1, -1, -1):              # outward from the peak
+            if hist[k] < cliff_frac * peak:
+                n_low = int(round(low_len / gap_bin))
+                lo_k = k - n_low                         # the cliff bin itself may be on the slope
+                if lo_k < 0:
+                    break
+                if np.all(hist[lo_k:k] < low_frac * peak):
+                    beyond = hist[:lo_k].sum()
+                    room = hist[k + 1:].sum()
+                    if beyond >= beyond_frac * room:
+                        found = (edges[k + 1], room, beyond)
+                break                                    # first cliff decides
+        if found is None:
+            continue                                     # not certain: draw nothing
+        cliff, room, beyond = found
+        off = cliff * walk_side
+        p0 = a + t0 * t_dir + off * n
+        p1 = a + t1 * t_dir + off * n
+        dup = False
+        for q0, q1, _ in walls:  # same glass found twice (parallel, close): keep the first
+            dq = (q1 - q0) / max(np.linalg.norm(q1 - q0), 1e-9)
+            nq = np.array([-dq[1], dq[0]])
+            mid = 0.5 * (p0 + p1)
+            if abs(dq @ t_dir) > np.cos(np.radians(10)) and abs((mid - q0) @ nq) < 0.4:
+                dup = True
+                break
+        if not dup:
+            walls.append((p0, p1, float(beyond / max(room, 1))))
     return walls
 
 
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
           robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2,
-          below_floor=0.05, obst_ratio=0.5, reach_radius=3.5, detect_glass=False):
+          below_floor=0.05, obst_ratio=0.5, reach_radius=3.5, detect_glass=True):
     out.mkdir(parents=True, exist_ok=True)
     P, C = read_ply(ply)
     cams = json.loads(Path(cameras_json).read_text())
