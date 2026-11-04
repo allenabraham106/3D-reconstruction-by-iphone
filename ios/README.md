@@ -1,10 +1,14 @@
-# PhoneScan: iPhone capture app for 3D reconstruction
+# Pioneer Home: iPhone capture app for 3D reconstruction
+
+<img src="../docs/images/pioneer-home/icon.png" width="96">
+
+*Code name `PhoneScan` (Xcode project, folders, bundle ID). The app shows as **Pioneer Home**.*
 
 A native SwiftUI + ARKit app that turns an iPhone into a scanning rig for room- and floor-scale
 reconstruction, built with the Pioneer humanoid (WATonomous) in mind: the robot gets a
 metric, gravity-aligned map instead of an arbitrarily scaled SfM model.
 
-While you walk around, PhoneScan saves **keyframes**: an RGB JPEG plus ARKit's 6-DoF pose and
+While you walk around, Pioneer Home saves **keyframes**: an RGB JPEG plus ARKit's 6-DoF pose and
 intrinsics, and on LiDAR iPhones the depth map, confidence map and the live ARKit mesh. The
 output drops straight into nerfstudio / gsplat, COLMAP (with known poses) or a plain depth-fusion
 point cloud.
@@ -23,12 +27,18 @@ Requires iOS 17 or later and Xcode 16 or later.
 
 ## Screens
 
-Mockups drawn from the SwiftUI layout (the app hasn't been built on a device yet).
+Mockups drawn from the SwiftUI code. The app compiles in CI but hasn't run on a phone yet.
 Full documentation: [`docs/PHONESCAN.md`](../docs/PHONESCAN.md).
 
-| iPhone 17 (no LiDAR) | Pro, recording with mesh | Captures | Settings |
-|---|---|---|---|
-| ![](../docs/images/05b-iphone17-recording.webp) | ![](../docs/images/02-recording.webp) | ![](../docs/images/06-library.webp) | ![](../docs/images/07-settings.webp) |
+| <img src="../docs/images/pioneer-home/tutorial.webp" width="180"> | <img src="../docs/images/pioneer-home/recording.webp" width="180"> | <img src="../docs/images/pioneer-home/head-back.webp" width="180"> | <img src="../docs/images/pioneer-home/captures.webp" width="180"> |
+|:-:|:-:|:-:|:-:|
+| Tutorial | Recording: tips, mini-map, meters | "Head back to start" | Captures |
+
+| <img src="../docs/images/pioneer-home/ready.webp" width="180"> | <img src="../docs/images/pioneer-home/too-fast.webp" width="180"> | <img src="../docs/images/pioneer-home/settings.webp" width="180"> | <img src="../docs/images/pioneer-home/home-screen.webp" width="180"> |
+|:-:|:-:|:-:|:-:|
+| Ready (iPhone 17, tracking dots) | Too-fast warning | Settings presets | Home-screen icon |
+
+The look comes from WATonomous: logo blue `#1E5E96`, lantern teal `#5CC0C8`, night navy `#0E2230` and shop-light amber `#E3A867`, all in [`PhoneScan/Theme.swift`](PhoneScan/Theme.swift). The icon is the Pioneer plushie's helmet.
 
 ## Install on your iPhone
 

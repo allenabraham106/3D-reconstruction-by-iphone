@@ -10,7 +10,7 @@ This reproduces the kind of result in the NVIDIA-stack demo (ViPE-style pose and
 
 ## Two ways to capture
 
-| | **A. Any video** (Camera app) | **B. PhoneScan app** (`ios/PhoneScan.xcodeproj`) — recommended for robots |
+| | **A. Any video** (Camera app) | **B. Pioneer Home app** (`ios/PhoneScan.xcodeproj`) — recommended for robots |
 |---|---|---|
 | What you record | `.MOV` (HEVC, HDR OK, any orientation) | RGB + ARKit 6-DoF pose + intrinsics (+ LiDAR depth on Pro models) |
 | Scale | estimated from phone height above the floor (`--phone-height`, default 1.4 m) | **true metric** from ARKit |
@@ -60,7 +60,7 @@ iPhone video ─► frames.py ─► sfm.py ─────────► mvs.p
                              incremental BA     multi-view consistency  occupancy grid
                                                 fusion
 
-PhoneScan app ──► ingest_arkit.py ─► (LiDAR) fuse depth with ARKit poses ─► robot_map.py --metric
+Pioneer Home ──► ingest_arkit.py ─► (LiDAR) fuse depth with ARKit poses ─► robot_map.py --metric
                                      (no LiDAR) sfm seeded with ARKit positions + mvs, Sim(3)-align
 ```
 
@@ -109,13 +109,25 @@ The kitchen capture circles a table and almost never sees the floor, so the map 
 
 Reproduce: `python tests/eval_poses.py out/<name>/sfm/sparse_best <reference sparse dir>`; ARKit round-trip test: `tests/make_synthetic_arkit.py`.
 
-## iOS app (`ios/`)
+## iOS app: Pioneer Home (`ios/`)
 
-**PhoneScan** is the capture app: SwiftUI + ARKit, iOS 17+. Setup, capture format and screenshots are in [`ios/README.md`](ios/README.md) and [`docs/PHONESCAN.md`](docs/PHONESCAN.md). In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, scan, then AirDrop or upload the capture and run `python run.py <capture> --arkit`. Its upload receiver can run that automatically: `python3 tools/receive_server.py --on-upload "python run.py {dir} --arkit"`.
+<img src="docs/images/pioneer-home/icon.png" width="72" align="left" style="margin-right:12px">
+
+**Pioneer Home** is the capture app for the Pioneer humanoid: SwiftUI + ARKit, iOS 17+, in WATonomous colours. You walk a room, and it saves keyframes with ARKit's metric, gravity-aligned camera poses (plus LiDAR depth and mesh on Pro iPhones). Then you AirDrop or upload the scan and run `python run.py <capture> --arkit`. Setup, capture format and details are in [`ios/README.md`](ios/README.md) and [`docs/PHONESCAN.md`](docs/PHONESCAN.md). (The Xcode project and folders keep the code name `PhoneScan`.)
+
+| <img src="docs/images/pioneer-home/tutorial.webp" width="180"> | <img src="docs/images/pioneer-home/recording.webp" width="180"> | <img src="docs/images/pioneer-home/head-back.webp" width="180"> | <img src="docs/images/pioneer-home/captures.webp" width="180"> |
+|:-:|:-:|:-:|:-:|
+| Tutorial | Recording: tips, mini-map, meters | "Head back to start" | Captures |
+
+*Mockups drawn from the SwiftUI code; the app compiles in CI but hasn't run on a phone yet.*
+
+While you scan, it guides you live: a tip card (too fast, low detail, tilt up and down, head back to start, loop closed), a top-down mini-map of your walk, Pace and Detail meters, ARKit tracking dots on iPhones without LiDAR, and a flash and haptics on each saved frame. On first launch, a short tutorial explains how to scan well. Settings offers Quick / Balanced / Detailed presets.
+
+In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, scan, then AirDrop or upload the capture and run `python run.py <capture> --arkit`. Its upload receiver can run that automatically: `python3 tools/receive_server.py --on-upload "python run.py {dir} --arkit"`.
 
 `ios/ScanCapture/` + `ios/project.yml` is an earlier, smaller prototype that writes `frames.jsonl` + raw `.bin` depth. The pipeline reads both formats.
 
-> Neither app has been built on a Mac or run on a device yet. The Python side is tested against synthetic captures in both apps' exact formats. Expect a small fix or two on first build.
+> Pioneer Home compiles in CI (GitHub Actions, Xcode on macOS) but hasn't run on a device yet. The Python side is tested against synthetic captures in both apps' exact formats. Expect a small fix or two on first build.
 
 ## Capture tips
 
