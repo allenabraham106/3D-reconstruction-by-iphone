@@ -95,7 +95,7 @@ def fit_floor(P, up, cam_centres, iters=600, seed=0, min_rel_support=0.10):
 
 
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
-          robot_height=1.8, step_height=0.08):
+          robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2):
     out.mkdir(parents=True, exist_ok=True)
     P, C = read_ply(ply)
     cams = json.loads(Path(cameras_json).read_text())
@@ -159,27 +159,70 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     np.add.at(free, (ij[floor_pts, 1], ij[floor_pts, 0]), 1)
     np.add.at(occ, (ij[obst_pts, 1], ij[obst_pts, 0]), 1)
     occ_mask = occ >= 3
-    free_mask = (free >= 1) & ~occ_mask
+    seen_free = (free >= 1) & ~occ_mask
     # fill small holes in observed floor (sparse stereo on textureless floor)
-    free_mask = cv2.morphologyEx(free_mask.astype(np.uint8), cv2.MORPH_CLOSE,
+    seen_free = cv2.morphologyEx(seen_free.astype(np.uint8), cv2.MORPH_CLOSE,
                                  np.ones((5, 5), np.uint8)).astype(bool) & ~occ_mask
-    grid = np.full((H, W), 205, np.uint8)  # unknown
-    grid[free_mask] = 254
-    grid[occ_mask] = 0
-    grid = grid[::-1]  # PGM row 0 = max y
-    cv2.imwrite(str(out / "occupancy.pgm"), grid)
-    (out / "occupancy.yaml").write_text(
-        f"image: occupancy.pgm\nmode: trinary\nresolution: {cell}\n"
-        f"origin: [{lo[0]:.3f}, {lo[1]:.3f}, 0.0]\nnegate: 0\n"
-        f"occupied_thresh: 0.65\nfree_thresh: 0.25\n")
-    # preview with the camera path drawn on
-    prev = cv2.cvtColor(grid, cv2.COLOR_GRAY2BGR)
-    pts = np.floor((Cw[:, :2] - lo) / cell).astype(int)
+    # Real evidence stereo can miss: the person carrying the phone walked here, so the
+    # floor exists and was free (a ~0.3 m footprint around the projected camera path).
+    path_px = np.floor((Cw[:, :2] - lo) / cell).astype(np.int32)
+    walked = np.zeros((H, W), np.uint8)
+    foot = max(1, int(round(walk_radius / cell)))
+    for a_, b_ in zip(path_px[:-1], path_px[1:]):
+        if np.linalg.norm((b_ - a_) * cell) < 1.0:  # skip jumps across SfM gaps
+            cv2.line(walked, tuple(int(x) for x in a_), tuple(int(x) for x in b_), 1, 2 * foot)
+    # The walker's body swept this space: obstacles reported in the core of the path
+    # (< carve_radius) are false (depth streaks) and get cleared.
+    core = np.zeros((H, W), np.uint8)
+    cr = max(1, int(round(carve_radius / cell)))
+    for a_, b_ in zip(path_px[:-1], path_px[1:]):
+        if np.linalg.norm((b_ - a_) * cell) < 1.0:
+            cv2.line(core, tuple(int(x) for x in a_), tuple(int(x) for x in b_), 1, 2 * cr)
+    carved = occ_mask & core.astype(bool)
+    occ_mask = occ_mask & ~carved
+    walked = walked.astype(bool) & ~occ_mask
+    free_mask = seen_free | walked
+    # Inferred ("imagined") floor: gaps up to ~infer_gap between known-free cells with no
+    # obstacle seen. Kept in a separate layer: plausible, but never observed.
+    g = max(3, int(round(infer_gap / cell)) | 1)
+    closed = cv2.morphologyEx(free_mask.astype(np.uint8), cv2.MORPH_CLOSE,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))).astype(bool)
+    inferred = closed & ~free_mask & ~occ_mask
+
+    def write_grid(name, free_cells):
+        grid = np.full((H, W), 205, np.uint8)  # unknown
+        grid[free_cells] = 254
+        grid[occ_mask] = 0
+        cv2.imwrite(str(out / f"{name}.pgm"), grid[::-1])  # PGM row 0 = max y
+        (out / f"{name}.yaml").write_text(
+            f"image: {name}.pgm\nmode: trinary\nresolution: {cell}\n"
+            f"origin: [{lo[0]:.3f}, {lo[1]:.3f}, 0.0]\nnegate: 0\n"
+            f"occupied_thresh: 0.65\nfree_thresh: 0.25\n")
+    write_grid("occupancy", free_mask)                         # observed + walked
+    write_grid("occupancy_with_inferred", free_mask | inferred)  # + imagined gaps
+    # preview: white seen, light green walked, light blue inferred, black occupied
+    prev = np.full((H, W, 3), 205, np.uint8)
+    prev[seen_free] = (255, 255, 255)
+    prev[walked & ~seen_free] = (200, 240, 200)
+    prev[inferred] = (245, 225, 190)
+    prev[occ_mask] = (0, 0, 0)
+    prev = prev[::-1].copy()
+    pts = path_px.copy()
     pts[:, 1] = H - 1 - pts[:, 1]
     cv2.polylines(prev, [pts.reshape(-1, 1, 2)], False, (255, 160, 60), 1, cv2.LINE_AA)
     k = max(1, int(np.ceil(600 / max(W, H))))
     prev = cv2.resize(prev, (W * k, H * k), interpolation=cv2.INTER_NEAREST)
     cv2.imwrite(str(out / "occupancy_preview.png"), prev)
+    # inferred floor as points (for the viewer), coloured like the observed floor, z = 0
+    fill = (walked & ~seen_free) | inferred
+    if fill.any() and floor_pts.any():
+        fy, fx = np.nonzero(fill)
+        Pi = np.stack([lo[0] + (fx + 0.5) * cell, lo[1] + (fy + 0.5) * cell, np.zeros(len(fx))], 1)
+        # sub-sample each cell a little so it renders as a surface, not a dot grid
+        jit = np.random.default_rng(0).uniform(-0.5, 0.5, (len(Pi) * 4, 2)) * cell
+        Pi = np.repeat(Pi, 4, 0); Pi[:, :2] += jit
+        col = np.median(C[floor_pts], 0)
+        write_ply(out / "inferred_floor.ply", Pi, np.tile(col, (len(Pi), 1)).astype(np.uint8))
 
     # ---------------- 3D voxel occupancy ----------------
     vox = 0.05
@@ -200,7 +243,10 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     meta = {"scale_applied": float(scale), "metric_source": "arkit" if metric else
             f"phone_height={phone_height}m", "floor_inlier_fraction": float(frac),
             "grid_cell_m": cell, "grid_size": [int(W), int(H)],
-            "free_cells": int(free_mask.sum()), "occupied_cells": int(occ_mask.sum()),
+            "free_cells": int(free_mask.sum()), "free_cells_seen": int(seen_free.sum()),
+            "free_cells_walked_only": int((walked & ~seen_free).sum()),
+            "inferred_cells": int(inferred.sum()), "occupied_cells": int(occ_mask.sum()),
+            "false_obstacles_carved_by_walk": int(carved.sum()),
             "points": int(len(Pw)), "voxels_5cm": int(len(vi)),
             "scene_extent_m": (Pw.max(0) - Pw.min(0)).round(2).tolist(),
             "camera_height_median_m": float(np.median(Cw[:, 2])), "warnings": warnings}
