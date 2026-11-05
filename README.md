@@ -31,7 +31,36 @@ What these two scans taught the pipeline (each fix measured on them):
 - **Per-pixel depth noise makes walls look smeared.** **TSDF fusion** averages every view into a volume and extracts a mesh, so walls and floors come out as continuous surfaces.
 - **Glossy floors reflect the room.** Points under the floor (mirror images) are dropped, and reflections are no longer mistaken for the floor plane.
 - **SfM splits at dark corners and turns on the spot.** Pieces that share frames are aligned and merged; pieces that share none get targeted **bridge matching** (5 k pairs instead of 38 k).
+- **A window can tear the camera path.** Frames facing a big window or a blank wall have almost no matches, and the mapper glued the rest of the walk on through bad ones: the cameras "teleported" ~11 units between two frames (200x a normal step), turning the living room into a fake 15 x 20 m corridor. SfM now flags any frame-to-frame jump over 20x the median step, cuts the weak frames there and maps again (see [Apartment](#apartment-three-walks-one-map)).
 - **The walker is evidence.** Where you walked, there is floor and nothing in the way: the robot map uses the camera path to add free floor and clear false obstacles.
+
+## Apartment: three walks, one map
+
+Three walks through the same apartment: a dim evening walk (IMG_6070), a brighter one (IMG_6076) and a later one (IMG_6077).
+
+![window fix](docs/img/apartment_window_fix.png)
+
+*The bright walk before and after the jump fix (robot map; white = floor, black = obstacles, blue = path). Before, the camera path tore where the phone faced the living-room window, and everything after it landed ~11 m away. After, the kitchen, living room and hallway line up as one 8.6 x 9.2 m apartment. The dim walk had the same tear at frame 172.*
+
+<img src="docs/img/apartment_6077_mesh.png" width="49%"> <img src="docs/img/apartment_6077_occupancy.png" width="49%">
+
+*The latest walk (IMG_6077, 115 s): 268/274 frames placed, no tears. Living room with sofas, round table and window (top), kitchen island (middle), hallway (left).*
+
+**Merging the walks** (`recon/merge_scans.py`): all frames of the three walks are solved together (761/761 placed). Then each walk's own solve is fitted onto that joint solve, skipping frames where the two disagree (RANSAC), and tightened with ICP on the overlap. Each walk's cached depth is reused, so no stereo re-runs. The walks agree to 0.11-0.18% of the scene size.
+
+<img src="docs/img/apartment_three_walks_paths.png" width="49%"> <img src="docs/img/apartment_merged3_mesh.png" width="49%">
+
+*Left: the three camera paths after the joint solve trace the same rooms. Right: the merged mesh, 745 cameras, 1.48 M triangles.*
+
+![merge maps](docs/img/apartment_merge_maps.png)
+
+*Robot maps from one walk, two, and all three. Two walks give the most seen floor (8,075 free cells vs 6,003-6,945 for one). The three-walk map has the most complete walls, but fewer free cells (6,102): the walks' floors sit a few cm apart in places, and the 8 cm obstacle threshold then counts some floor as obstacle. A per-tile floor height was tried and made 5 of 6 maps worse, so it was dropped. ARKit gravity from the app should remove this offset.*
+
+```bash
+python recon/merge_scans.py out/apartment \
+    --scan out/IMG_6070 --cross 10-66 --scan out/IMG_6076 --cross 0-20,240-290 \
+    --scan out/IMG_6077 --cross 0-274 --cross-step 4
+```
 
 ## Two ways to capture
 
@@ -215,4 +244,4 @@ Tested (`python tests/test_robot_link.py`, also in CI): views that were never ke
 - **Textureless surfaces** (plain walls, glossy floors) still get sparse stereo coverage. LiDAR fixes this on Pro phones. A learned monocular-depth prior (as ViPE uses) would help without LiDAR; it was left out because this environment couldn't fetch model weights safely.
 - Speed: bundle adjustment now runs less often (when the model grows 1.4× instead of 1.1×), which cut SfM time 7–15 % with identical accuracy on the room and kitchen. Tried and rejected: the global (GLOMAP-style) mapper was no faster on these scenes and got the room badly wrong; 4096 instead of 8192 SIFT features gave no consistent gain.
 - Large multi-room floors: SfM time grows with frame count. Next steps are vocabulary-tree loop closure and `pose_only_long`-style windowed processing.
-- GPU path: on an NVIDIA machine, NVIDIA's ViPE (`pip install nvidia-vipe`) can replace `sfm.py` + `mvs.py`, and nvblox can do real-time TSDF/ESDF mapping on the robot itself.
+- GPU path: on an NVIDIA machine, NVIDIA's ViPE (`pip install nvidia-vipe`) can replace `sfm.py` + `mvs.py`, and nvblox can do real-time TSDF/ESDF mapping on the robot itself. `gpu/` has the one-command ViPE run plus a Gaussian-splat step for photoreal fly-throughs (see [gpu/README.md](gpu/README.md)).
