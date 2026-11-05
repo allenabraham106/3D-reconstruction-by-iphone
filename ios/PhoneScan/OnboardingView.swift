@@ -33,7 +33,7 @@ struct OnboardingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Pioneer Home").monoLabel(11)
+                Text("Pioneer Home").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
                 Spacer()
                 Button("Skip", action: done).font(.subheadline).foregroundStyle(Theme.ink2)
             }
@@ -44,12 +44,19 @@ struct OnboardingView: View {
                 ForEach(steps) { step in
                     VStack(alignment: .leading, spacing: 18) {
                         Spacer()
-                        Image(systemName: step.symbol)
-                            .font(.system(size: 44, weight: .ultraLight))
-                            .foregroundStyle(Theme.ink)
-                            .frame(width: 96, height: 96)
-                            .paperCard(20)
-                        Text(String(format: "%02d / %02d", step.id + 1, steps.count)).monoLabel(11, color: Theme.ink2)
+                        if step.id == 0 {
+                            Image("PioneerHero")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: .infinity, maxHeight: 300)
+                        } else {
+                            Image(systemName: step.symbol)
+                                .font(.system(size: 34, weight: .light))
+                                .foregroundStyle(Theme.accent)
+                                .frame(width: 84, height: 84)
+                                .background(Theme.accent.opacity(0.12), in: Circle())
+                        }
+                        Text("Step \(step.id + 1) of \(steps.count)").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.accent)
                         Text(step.title)
                             .font(Theme.display(32))
                             .foregroundStyle(Theme.ink)
@@ -79,11 +86,12 @@ struct OnboardingView: View {
             Button {
                 if page < steps.count - 1 { withAnimation { page += 1 } } else { done() }
             } label: {
-                Text(page < steps.count - 1 ? "Next" : "Start")
-                    .monoLabel(13, color: Theme.card)
+                Text(page < steps.count - 1 ? "Next" : "Get started")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Theme.card)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Theme.ink, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .padding(.vertical, 17)
+                    .background(Theme.ink, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 24)

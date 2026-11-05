@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(CaptureSettings.Key.showFeaturePoints) private var showFeaturePoints = true
     @AppStorage(CaptureSettings.Key.use4K) private var use4K = false
     @AppStorage(CaptureSettings.Key.serverURL) private var serverURL = "http://192.168.1.100:8765"
+    @AppStorage(CaptureSettings.Key.appearance) private var appearance = Appearance.system.rawValue
 
     @State private var showAdvanced = false
 
@@ -27,6 +28,15 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("Appearance", selection: $appearance) {
+                        ForEach(Appearance.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Appearance")
+                }
+
                 Section {
                     Picker("Detail", selection: Binding(
                         get: { currentPreset },

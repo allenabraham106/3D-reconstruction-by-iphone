@@ -7,11 +7,12 @@ The full illustrated guide is published as an artifact. This file holds the imag
 
 ## Screens (mockups from the SwiftUI layout, not device captures)
 
-| <img src="images/pioneer-home/home.webp" width="180"> | <img src="images/pioneer-home/mapping.webp" width="180"> | <img src="images/pioneer-home/scans.webp" width="180"> | <img src="images/pioneer-home/on-pioneer.webp" width="180"> |
+| <img src="images/pioneer-home/home-light.webp" width="180"> | <img src="images/pioneer-home/map-light.webp" width="180"> | <img src="images/pioneer-home/mapping-light.webp" width="180"> | <img src="images/pioneer-home/scans-light.webp" width="180"> |
 |:-:|:-:|:-:|:-:|
-| Home: 3D map, Pioneer localized | Mapping | My Scans | Maps on Pioneer |
+| <img src="images/pioneer-home/home-dark.webp" width="180"> | <img src="images/pioneer-home/map-dark.webp" width="180"> | <img src="images/pioneer-home/mapping-dark.webp" width="180"> | <img src="images/pioneer-home/scans-dark.webp" width="180"> |
+| Home: Pioneer and its status | Map: Pioneer localized | Mapping | Scans |
 
-<img src="images/pioneer-home/pioneer-model.webp" width="200"> <img src="images/pioneer-home/tutorial.webp" width="180">
+<img src="images/pioneer-home/pioneer-model.webp" width="200">
 
 ## Real tool output (synthetic 48-frame capture in the app's exact format)
 

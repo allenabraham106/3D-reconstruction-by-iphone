@@ -18,7 +18,7 @@ struct LibraryView: View {
         ZStack(alignment: .bottomTrailing) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("My Scans").font(Theme.display(34)).foregroundStyle(Theme.ink)
+                    Text("Scans").font(Theme.display(34)).foregroundStyle(Theme.ink)
                         .padding(.top, 24)
                     Segmented(options: [(Where.phone, "On phone"), (Where.robot, "On Pioneer")], selection: $showing)
                     if let status = library.status ?? robot.busy {
@@ -36,10 +36,10 @@ struct LibraryView: View {
                 .padding(.bottom, 100)
             }
             PillButton(title: "New scan", symbol: "plus") { showCapture = true }
-                .padding(.trailing, 18)
+                .padding(.horizontal, 18)
                 .padding(.bottom, 18)
         }
-        .background(Theme.card)
+        .background(Theme.paper)
         .fullScreenCover(isPresented: $showCapture) { CaptureView() }
         .onAppear { library.refresh() }
         .refreshable { library.refresh() }
@@ -56,7 +56,7 @@ struct LibraryView: View {
     @ViewBuilder
     private var phoneList: some View {
         if library.items.isEmpty {
-            empty("No scans yet", "Tap NEW SCAN and walk slowly around a room.")
+            empty("No scans yet", "Tap New scan and walk slowly around a room.")
         } else {
             VStack(spacing: 10) {
                 ForEach(library.items) { item in
@@ -66,7 +66,7 @@ struct LibraryView: View {
                             sendToRobot: { send(item) },
                             upload: { Task { await library.upload(item, server: serverURL) } },
                             delete: { pendingDelete = item })
-                        .paperCard(12)
+                        .paperCard(16)
                         .disabled(library.busyItem != nil)
                 }
             }
@@ -98,7 +98,7 @@ struct LibraryView: View {
                         .tint(Theme.chipGreen)
                     }
                     .padding(14)
-                    .paperCard(12)
+                    .paperCard(16)
                 }
             }
         }
@@ -114,7 +114,7 @@ struct LibraryView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
         .padding(.horizontal, 20)
-        .paperCard(12)
+        .paperCard(16)
     }
 
     private func share(_ item: CaptureItem) {
@@ -145,8 +145,8 @@ struct ScanRow: View {
         HStack(spacing: 12) {
             Thumbnail(url: item.thumbnailURL)
                 .frame(width: 54, height: 72)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Theme.line, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.line, lineWidth: 1))
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.date, format: .dateTime.weekday(.abbreviated).month().day().hour().minute())
                     .font(.subheadline).foregroundStyle(Theme.ink)

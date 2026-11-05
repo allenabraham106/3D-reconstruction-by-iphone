@@ -27,16 +27,17 @@ Requires iOS 17 or later and Xcode 16 or later.
 
 ## Screens
 
-Mockups drawn from the SwiftUI code. The app compiles in CI but hasn't run on a phone yet.
+Mockups drawn from the SwiftUI layout, in light and dark mode. The app compiles in CI but hasn't run on a phone yet.
 Full documentation: [`docs/PHONESCAN.md`](../docs/PHONESCAN.md).
 
-| <img src="../docs/images/pioneer-home/home.webp" width="180"> | <img src="../docs/images/pioneer-home/mapping.webp" width="180"> | <img src="../docs/images/pioneer-home/scans.webp" width="180"> | <img src="../docs/images/pioneer-home/on-pioneer.webp" width="180"> |
+| <img src="../docs/images/pioneer-home/home-light.webp" width="180"> | <img src="../docs/images/pioneer-home/map-light.webp" width="180"> | <img src="../docs/images/pioneer-home/mapping-light.webp" width="180"> | <img src="../docs/images/pioneer-home/scans-light.webp" width="180"> |
 |:-:|:-:|:-:|:-:|
-| Home: 3D map, Pioneer localized | Mapping | My Scans | Maps on Pioneer |
+| <img src="../docs/images/pioneer-home/home-dark.webp" width="180"> | <img src="../docs/images/pioneer-home/map-dark.webp" width="180"> | <img src="../docs/images/pioneer-home/mapping-dark.webp" width="180"> | <img src="../docs/images/pioneer-home/scans-dark.webp" width="180"> |
+| Home: Pioneer and its status | Map: Pioneer localized | Mapping | Scans |
 
-<img src="../docs/images/pioneer-home/pioneer-model.webp" width="200"> <img src="../docs/images/pioneer-home/tutorial.webp" width="180">
+<img src="../docs/images/pioneer-home/pioneer-model.webp" width="200">
 
-*The Pioneer model the app draws (from the URDF), and the tutorial.*
+*The Pioneer model the Map screen draws (from the URDF, every joint kept). Home shows a studio render of the final humanoid (`Assets.xcassets/PioneerHero`).*
 
 **Robot tab**: connect to `robot_link.server` on the robot; Home then localizes Pioneer (or this phone) and shows it on the 3D map. See "Robot link" in the main README.
 

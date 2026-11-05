@@ -16,6 +16,7 @@ struct CaptureSettings {
         static let showFeaturePoints = "showFeaturePoints"
         static let didOnboard = "didOnboard"
         static let hidePhotoModeCard = "hidePhotoModeCard"
+        static let appearance = "appearance"
     }
 
     static let defaults: [String: Any] = [
@@ -32,6 +33,7 @@ struct CaptureSettings {
         Key.showFeaturePoints: true,
         Key.didOnboard: false,
         Key.hidePhotoModeCard: false,
+        Key.appearance: "System",
     ]
 
     /// Named keyframe densities shown in Settings. Values: (cm, degrees, seconds).
