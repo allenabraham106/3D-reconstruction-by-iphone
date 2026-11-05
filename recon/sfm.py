@@ -129,6 +129,20 @@ def find_pose_jumps(rec, factor=20.0):
     return [(int(idx[k]), int(idx[k + 1])) for k in np.where(step > factor * med)[0]]
 
 
+def max_step_ratio(rec, between=None):
+    """Largest frame-to-frame camera step / median step (or the step of one jump)."""
+    ims = sorted((_frame_no(im.name), im.projection_center())
+                 for im in rec.images.values() if _frame_no(im.name) is not None)
+    idx = np.array([i for i, _ in ims])
+    C = np.array([c for _, c in ims])
+    step = np.linalg.norm(np.diff(C, axis=0), axis=1) / np.maximum(np.diff(idx), 1)
+    r = step / np.median(step)
+    if between is not None:
+        k = np.where(idx[:-1] == between[0])[0]
+        return float(r[k[0]]) if len(k) else 0.0
+    return float(r.max())
+
+
 def weak_frames_near(rec, jumps, radius=8, rel=0.35):
     """Frames around each jump that saw few 3D points (the weak link)."""
     pts = {_frame_no(im.name): im.num_points3D for im in rec.images.values()}
@@ -154,6 +168,46 @@ def cut_frame_links(db_path, frames):
         con.commit()
     con.close()
     return len(ids)
+
+
+def fix_pose_jumps(rec, db, image_dir, work, use_priors=False, ba_ratio=1.4, n_images=None):
+    """Re-map without the weak frames around camera jumps (see find_pose_jumps)."""
+    n_images = n_images or rec.num_reg_images()
+    # Cut the worst jump first and look again: removing one weak link often fixes a
+    # second jump too (the mapper had been forced into a bad placement by the first).
+    # If a jump survives its cut, the bad link reaches further: cut a wider window.
+    tried = []
+    for attempt in range(4):
+        jumps = find_pose_jumps(rec)
+        if not jumps:
+            break
+        worst = max(jumps, key=lambda j: max_step_ratio(rec, j))
+        if any(abs(worst[0] - t[0]) <= 10 for t in tried):
+            cut = set(range(worst[0] - 6, worst[1] + 7))
+        else:
+            cut = weak_frames_near(rec, [worst])
+        tried.append(worst)
+        print(f"[sfm] camera jump between frames {worst} (of {len(jumps)}): cutting the weak "
+              f"links ({len(cut)} frames: {min(cut)}-{max(cut)}) and re-mapping")
+        cut_frame_links(db, cut)
+        rec4 = _map(db, image_dir, work / f"sparse_cut{attempt}", use_priors, ba_ratio)
+        if rec4 is None or rec4.num_reg_images() < 0.7 * rec.num_reg_images():
+            print("[sfm] WARNING: re-mapping lost too many frames; keeping the previous model")
+            break
+        if max_step_ratio(rec4) > 0.5 * max_step_ratio(rec):
+            print("[sfm] jump still there after the cut")
+            continue
+        rec = rec4
+        print(f"[sfm] re-mapped: {rec.num_reg_images()}/{n_images}, "
+              f"{len(find_pose_jumps(rec))} jump(s) left")
+        # pieces from the earlier solves were glued by the bad links: don't attach them
+        for d in work.glob("sparse*"):
+            if d.is_dir() and d.name not in (f"sparse_cut{attempt}", "sparse_best"):
+                d.rename(work / f"rejected_{d.name}")
+    else:
+        if find_pose_jumps(rec):
+            print("[sfm] WARNING: camera jumps remain; the map may be torn there")
+    return rec
 
 
 def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600,
@@ -225,19 +279,7 @@ def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600
         print(f"[sfm] re-mapping {time.time()-t:.0f}s: {rec.num_reg_images()}/{n_images}")
     if rec is None:
         raise RuntimeError("SfM failed: no reconstruction")
-    jumps = find_pose_jumps(rec)
-    if jumps:
-        cut = weak_frames_near(rec, jumps)
-        print(f"[sfm] camera jumps between frames {jumps}: cutting the weak links "
-              f"({len(cut)} frames: {sorted(cut)}) and re-mapping")
-        cut_frame_links(db, cut)
-        rec4 = _map(db, image_dir, work / "sparse_cut", use_priors, ba_ratio)
-        if rec4 is not None and not find_pose_jumps(rec4) and \
-                rec4.num_reg_images() >= 0.7 * rec.num_reg_images():
-            rec = rec4
-            print(f"[sfm] re-mapped without jumps: {rec.num_reg_images()}/{n_images}")
-        else:
-            print("[sfm] WARNING: re-mapping did not remove the jump; keeping the first model")
+    rec = fix_pose_jumps(rec, db, image_dir, work, use_priors, ba_ratio, n_images)
     out = work / "sparse_best"
     out.mkdir(exist_ok=True)
     rec.write(out)
