@@ -5,6 +5,7 @@ struct PhoneScanApp: App {
     @StateObject private var capture = CaptureManager()
     @StateObject private var library = CaptureLibrary()
     @StateObject private var robot = RobotLink()
+    @AppStorage(CaptureSettings.Key.appearance) private var appearance = Appearance.system.rawValue
 
     init() {
         CaptureSettings.registerDefaults()
@@ -16,20 +17,20 @@ struct PhoneScanApp: App {
                 .environmentObject(capture)
                 .environmentObject(library)
                 .environmentObject(robot)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(Appearance(rawValue: appearance)?.colorScheme)
                 .tint(Theme.ink)
         }
     }
 }
 
-/// Home · Scans · Robot · Settings, with a plain hairline tab bar.
+/// Home · Scans · Robot · Settings, with a plain tab bar (icon + label).
 struct RootView: View {
     enum Tab: String, CaseIterable {
         case home = "Home", scans = "Scans", robot = "Robot", settings = "Settings"
         var symbol: String {
             switch self {
             case .home: return "house"
-            case .scans: return "map"
+            case .scans: return "viewfinder"
             case .robot: return "figure.stand"
             case .settings: return "gearshape"
             }
@@ -37,7 +38,7 @@ struct RootView: View {
         var selectedSymbol: String {
             switch self {
             case .home: return "house.fill"
-            case .scans: return "map.fill"
+            case .scans: return "viewfinder"
             case .robot: return "figure.stand"
             case .settings: return "gearshape.fill"
             }
@@ -54,7 +55,7 @@ struct RootView: View {
         VStack(spacing: 0) {
             Group {
                 switch tab {
-                case .home: HomeView(openRobotTab: { tab = .robot })
+                case .home: HomeView(openRobotTab: { tab = .robot }, openScansTab: { tab = .scans })
                 case .scans: LibraryView()
                 case .robot: RobotView()
                 case .settings: SettingsView(showOnboarding: $showOnboarding)
@@ -76,19 +77,20 @@ struct RootView: View {
         } message: { Text(robot.error ?? "") }
     }
 
-    /// Icons only; the selected tab gets a filled icon and a short bar above it.
+    /// Icon and label; the selected tab is ink, the rest are quiet.
     private var tabBar: some View {
         HStack {
             ForEach(Tab.allCases, id: \.self) { t in
                 Button { tab = t } label: {
-                    VStack(spacing: 8) {
-                        Rectangle().fill(tab == t ? Theme.ink : .clear).frame(width: 44, height: 2)
+                    VStack(spacing: 4) {
                         Image(systemName: tab == t ? t.selectedSymbol : t.symbol)
                             .font(.system(size: 19, weight: .regular))
                             .frame(height: 24)
+                        Text(t.rawValue).font(.system(size: 10.5, weight: .medium))
                     }
-                    .foregroundStyle(tab == t ? Theme.ink : Theme.ink2)
+                    .foregroundStyle(tab == t ? Theme.ink : Theme.ink3)
                     .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -96,8 +98,8 @@ struct RootView: View {
                 .accessibilityAddTraits(tab == t ? .isSelected : [])
             }
         }
-        .padding(.bottom, 4)
-        .background(Theme.card.ignoresSafeArea(edges: .bottom))
+        .padding(.bottom, 2)
+        .background(Theme.paper.ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
 }

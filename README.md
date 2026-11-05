@@ -153,15 +153,16 @@ This serves `/map` (nav2 `map_server`, 5 cm occupancy grid), `/pioneer/voxels` (
 
 **Pioneer Home** is the capture app for the Pioneer humanoid: SwiftUI + ARKit, iOS 17+, in WATonomous colours. You walk a room, and it saves keyframes with ARKit's metric, gravity-aligned camera poses (plus LiDAR depth and mesh on Pro iPhones). Then you AirDrop or upload the scan and run `python run.py <capture> --arkit`. Setup, capture format and details are in [`ios/README.md`](ios/README.md) and [`docs/PHONESCAN.md`](docs/PHONESCAN.md). (The Xcode project and folders keep the code name `PhoneScan`.)
 
-| <img src="docs/images/pioneer-home/home.webp" width="180"> | <img src="docs/images/pioneer-home/mapping.webp" width="180"> | <img src="docs/images/pioneer-home/scans.webp" width="180"> | <img src="docs/images/pioneer-home/on-pioneer.webp" width="180"> |
+| <img src="docs/images/pioneer-home/home-light.webp" width="180"> | <img src="docs/images/pioneer-home/map-light.webp" width="180"> | <img src="docs/images/pioneer-home/mapping-light.webp" width="180"> | <img src="docs/images/pioneer-home/scans-light.webp" width="180"> |
 |:-:|:-:|:-:|:-:|
-| Home: 3D map, Pioneer localized | Mapping | My Scans | Maps on Pioneer |
+| <img src="docs/images/pioneer-home/home-dark.webp" width="180"> | <img src="docs/images/pioneer-home/map-dark.webp" width="180"> | <img src="docs/images/pioneer-home/mapping-dark.webp" width="180"> | <img src="docs/images/pioneer-home/scans-dark.webp" width="180"> |
+| Home: Pioneer and its status | Map: Pioneer localized | Mapping | Scans |
 
-*Mockups drawn from the SwiftUI code; the app compiles in CI but hasn't run on a phone yet.*
+*Mockups drawn from the SwiftUI layout, light and dark (the app follows the system setting, or pick one in Settings); the app compiles in CI but hasn't run on a phone yet.*
 
-**Home** is the robot's 3D map: the scan as a coloured point cloud you can orbit (walls cut at 1.4 m so you see into the room), the scan route as a trail, and **Pioneer itself, built from its URDF** (`pioneer_whole_body_humanoid.urdf`: hands, every finger joint, 6-joint legs), standing where it last localized and walking to each new fix. Round buttons find Pioneer, switch top / 3D view, recenter, fly through the scan, and localize the phone. Below the map, status chips (Connected, Localized, ROS), a headline, and two big actions that follow Pioneer's state.
+**Home** shows Pioneer itself (a studio render of the final humanoid), a one-line status (Offline, Localized · living-room, Building the map…) and a headline that follows what it's doing, four round shortcuts (Localize, Scan room, Send scan, Map) and a short list. **Map** opens full screen: the scan as a coloured point cloud you can orbit (walls cut at 1.4 m so you see into the room), the scan route as a trail, and **Pioneer built from its URDF** (`pioneer_whole_body_humanoid.urdf`: hands, every finger joint, 6-joint legs), standing where it last localized and walking to each new fix. Round buttons find Pioneer, recenter, fly through the scan and localize the phone; a 3D / Top switch sits at the top, and the card below gives the map, Pioneer's position and the next action.
 
-**Mapping** guides you live (too fast, low detail, tilt up and down, head back to start, loop closed) with a mini-map, Pace and Detail meters, ARKit tracking dots on iPhones without LiDAR, and **Pause** / **Stop**. **My Scans** lists what's on the phone and on Pioneer (pick the active map). The robot model comes from `tools/urdf_to_app_model.py` (1.2M CAD triangles → 90k, every joint kept); the source URDF is Apache-2.0, from [WATonomous/pioneer_humanoid](https://github.com/WATonomous/pioneer_humanoid). Headlines use the WATonomous font if a `.otf`/`.ttf` is dropped into `ios/PhoneScan/`, else SF Pro Expanded.
+**Mapping** guides you live (too fast, low detail, tilt up and down, head back to start, loop closed) with a timer, a mini-map, Pace and Detail meters, ARKit tracking dots on iPhones without LiDAR, and pause / record / live-mesh buttons. **Scans** lists what's on the phone and on Pioneer (pick the active map). The robot model comes from `tools/urdf_to_app_model.py` (1.2M CAD triangles → 90k, every joint kept); the source URDF is Apache-2.0, from [WATonomous/pioneer_humanoid](https://github.com/WATonomous/pioneer_humanoid). Headlines use the WATonomous font if a `.otf`/`.ttf` is dropped into `ios/PhoneScan/`, else SF Pro Expanded.
 
 In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, scan, then AirDrop or upload the capture and run `python run.py <capture> --arkit`. Its upload receiver can run that automatically: `python3 tools/receive_server.py --on-upload "python run.py {dir} --arkit"`.
 
@@ -171,7 +172,7 @@ In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, s
 
 ## Robot link: localize the robot in the phone's map (`robot_link/`)
 
-<img src="docs/images/pioneer-home/home.webp" width="220" align="right">
+<img src="docs/images/pioneer-home/map-light.webp" width="220" align="right">
 
 The phone builds the map, and the robot localizes itself in it. `robot_link` turns a `run.py` output into a **relocalization map**: SIFT landmarks triangulated from the keyframes at their known poses, in the robot map frame (metres, Z up, floor at Z = 0, the same frame as `occupancy.yaml`). Localizing a new camera image is then one PnP + RANSAC solve, with no SfM on the robot.
 

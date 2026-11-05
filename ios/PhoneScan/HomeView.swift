@@ -1,168 +1,47 @@
 import SwiftUI
 
-/// Home tab: the robot's 3D map as the hero, round map buttons on the right, and a status sheet
-/// whose headline and two big tiles change with what Pioneer is doing.
-struct HomeView: View {
-    var openRobotTab: () -> Void = {}
+/// What Pioneer is doing, shared by Home and the Map screen.
+enum PioneerState { case offline, noMap, ready, localizing, localized, building, failed }
 
-    @EnvironmentObject private var capture: CaptureManager
-    @EnvironmentObject private var library: CaptureLibrary
-    @EnvironmentObject private var robot: RobotLink
-    @AppStorage(CaptureSettings.Key.robotURL) private var robotURL = "http://pioneer.local:8770"
-
-    @State private var showCapture = false
-    @State private var showSendPicker = false
-    @State private var command: MapCommand?
-    @State private var topView = false
-
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            map.ignoresSafeArea(edges: .top)
-            VStack(spacing: 0) {
-                HStack(alignment: .top) {
-                    Spacer()
-                    buttons
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                Spacer(minLength: 0)
-                sheet
-            }
-        }
-        .background(Theme.paper)
-        .fullScreenCover(isPresented: $showCapture) { CaptureView() }
-        .confirmationDialog("Send a scan to Pioneer", isPresented: $showSendPicker, titleVisibility: .visible) {
-            ForEach(Array(library.items.filter(\.isComplete).prefix(8))) { item in
-                Button("\(item.date.formatted(date: .abbreviated, time: .shortened)) · \(item.frameCount) frames") {
-                    Task {
-                        if let zip = try? await library.makeZip(item) {
-                            await robot.sendScan(robotURL, zip: zip, name: item.name)
-                        }
-                    }
-                }
-            }
-        } message: {
-            Text("Pioneer rebuilds it in 3D and makes a map it can find itself in. Takes a few minutes.")
-        }
-        .task {
-            library.refresh()
-            await robot.refresh(robotURL, quiet: true)
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3))
-                await robot.refresh(robotURL, quiet: true)
-            }
-        }
-    }
-
-    // MARK: Map
-
-    @ViewBuilder
-    private var map: some View {
-        ZStack {
-            MapBackdrop()
-            if let cloud = robot.cloud, !cloud.points.isEmpty {
-                Map3DView(cloud: cloud, path: robot.scanPath,
-                          robot: robot.status?.last["robot"], phone: robot.status?.last["phone"],
-                          command: command)
-                    .padding(.bottom, 200)
-            } else if let grid = robot.status?.grid, let img = robot.topdownImage ?? robot.mapImage {
-                FloorMap(image: img, grid: grid, robot: robot.status?.last["robot"], phone: robot.status?.last["phone"])
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, 260)
-                    .padding(.top, 60)
-            } else if robot.loadingMap {
-                ProgressView().padding(.bottom, 220)
-            } else {
-                emptyMap.padding(.bottom, 240)
-            }
-        }
-    }
-
-    private var emptyMap: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "cube.transparent").font(.system(size: 30, weight: .ultraLight)).foregroundStyle(Theme.ink2)
-            Text(robot.isConnected ? "No map yet" : "Pioneer is offline").monoLabel(11, color: Theme.ink2)
-        }
-    }
-
-    private var buttons: some View {
-        VStack(spacing: 10) {
-            RoundButton(symbol: "location", label: "Find Pioneer") { command = MapCommand(kind: .locateRobot) }
-            RoundButton(symbol: "square.3.layers.3d", label: topView ? "3D view" : "Top view", active: topView) {
-                topView.toggle()
-                command = MapCommand(kind: topView ? .topDown : .recenter)
-            }
-            RoundButton(symbol: "arrow.up.and.down.and.arrow.left.and.right", label: "Recenter") {
-                topView = false
-                command = MapCommand(kind: .recenter)
-            }
-            RoundButton(symbol: "airplane", label: "Fly through the scan") { command = MapCommand(kind: .flyThrough) }
-                .disabled(robot.scanPath.count < 3)
-            RoundButton(symbol: "video", label: "Localize this phone") { localizePhone() }
-                .disabled(!canLocalize)
-        }
-        .opacity(robot.cloud == nil ? 0.0 : 1)
-        .animation(.easeInOut(duration: 0.2), value: robot.cloud == nil)
-    }
-
-    // MARK: Sheet
-
-    private enum HomeState { case offline, noMap, ready, localizing, localized, building, failed }
-
-    private var state: HomeState {
-        guard robot.isConnected, let st = robot.status else { return .offline }
+extension RobotLink {
+    var pioneerState: PioneerState {
+        guard isConnected, let st = status else { return .offline }
         if ["unzipping", "reconstructing", "building relocalization map"].contains(st.job.state) { return .building }
-        if robot.busy?.hasPrefix("Localizing") == true { return .localizing }
+        if busy?.hasPrefix("Localizing") == true { return .localizing }
         if st.map == nil { return .noMap }
         if let r = st.last["robot"], r.ok { return .localized }
-        if let p = robot.lastResult, !p.ok { return .failed }
+        if let p = lastResult, !p.ok { return .failed }
         return .ready
     }
 
-    private var sheet: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Capsule().fill(Theme.line).frame(width: 36, height: 4).frame(maxWidth: .infinity).padding(.bottom, 14)
-            HStack(spacing: 6) { chips }
-            Text(headline).font(Theme.display(22)).foregroundStyle(Theme.ink).padding(.top, 10)
-            Text(subline).font(.subheadline).foregroundStyle(Theme.ink2).padding(.top, 2)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) { tiles }.padding(.top, 16)
+    var pioneerName: String { status?.name ?? "Pioneer" }
+
+    /// Short status under the robot's name, e.g. "Localized · living-room".
+    var statusText: String {
+        let map = status?.map
+        switch pioneerState {
+        case .offline: return "Offline"
+        case .noMap: return "Connected · no map yet"
+        case .ready: return "Map ready" + (map.map { " · \($0)" } ?? "")
+        case .localizing: return "Localizing…"
+        case .localized: return "Localized" + (map.map { " · \($0)" } ?? "")
+        case .building: return "Building the map…"
+        case .failed: return "Couldn't find itself"
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 8)
-        .padding(.bottom, 14)
-        .background(
-            UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22, style: .continuous)
-                .fill(Theme.card)
-                .shadow(color: .black.opacity(0.06), radius: 12, y: -2)
-        )
     }
 
-    @ViewBuilder
-    private var chips: some View {
-        switch state {
-        case .offline:
-            Chip(text: "Offline", symbol: "wifi.slash")
-        default:
-            Chip(text: "Connected", symbol: "wifi", style: .solid(Theme.chipGreen))
-            switch state {
-            case .building: Chip(text: "Building map", symbol: "cube.transparent", style: .solid(Theme.accent))
-            case .localizing: Chip(text: "Localizing", symbol: "scope", style: .solid(Theme.accent))
-            case .localized: Chip(text: "Localized", symbol: "location.fill", style: .solid(Theme.accent))
-            case .ready: Chip(text: "Map ready", symbol: "map", style: .solid(Theme.accent))
-            case .failed: Chip(text: "Not found", symbol: "location.slash", style: .solid(Theme.warning))
-            case .noMap: Chip(text: "No map", symbol: "map")
-            case .offline: EmptyView()
-            }
-            if robot.status?.ros == true { Chip(text: "ROS") }
+    var statusColor: Color {
+        switch pioneerState {
+        case .offline: return Theme.ink3
+        case .failed: return Theme.warning
+        case .building, .localizing: return Theme.accent
+        default: return Theme.good
         }
-        Spacer(minLength: 0)
-        if !capture.hasLiDAR { Chip(text: "Photo mode", symbol: "camera") }
     }
 
-    private var headline: String {
-        let name = robot.status?.name ?? "Pioneer"
-        switch state {
+    var headline: String {
+        let name = pioneerName
+        switch pioneerState {
         case .offline: return "\(name) is offline"
         case .noMap: return "\(name) needs a map"
         case .ready: return "\(name) is ready"
@@ -173,42 +52,269 @@ struct HomeView: View {
         }
     }
 
-    private var subline: String {
-        switch state {
+    var subline: String {
+        switch pioneerState {
         case .offline: return "Start robot_link on the robot, then connect in the Robot tab."
         case .noMap: return "Scan a room with this phone, then send the scan to Pioneer."
         case .ready: return "Localize to find where Pioneer is in the map."
         case .localizing: return "Matching what its camera sees against the map."
         case .localized:
-            guard let r = robot.status?.last["robot"] else { return "" }
+            guard let r = status?.last["robot"] else { return "" }
             return String(format: "x %.2f m · y %.2f m · facing %.0f° · %d matches", r.x, r.y, r.yaw_deg, r.inliers)
-        case .building: return (robot.status?.job.state ?? "working").capitalized + "… This takes a few minutes."
-        case .failed: return robot.lastResult?.reason ?? "Try again facing a part of the room that was scanned."
+        case .building: return (status?.job.state ?? "working").capitalized + "… This takes a few minutes."
+        case .failed: return lastResult?.reason ?? "Try again facing a part of the room that was scanned."
+        }
+    }
+
+    var canLocalize: Bool { isConnected && status?.map != nil && busy == nil }
+}
+
+/// Home tab: the robot as the hero, its status, four shortcuts and a short list.
+struct HomeView: View {
+    var openRobotTab: () -> Void = {}
+    var openScansTab: () -> Void = {}
+
+    @EnvironmentObject private var capture: CaptureManager
+    @EnvironmentObject private var library: CaptureLibrary
+    @EnvironmentObject private var robot: RobotLink
+    @AppStorage(CaptureSettings.Key.robotURL) private var robotURL = "http://pioneer.local:8770"
+
+    @State private var showCapture = false
+    @State private var showSendPicker = false
+    @State private var showMap = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 24)
+                .padding(.top, 12)
+            Image("PioneerHero")
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, 8)
+                .accessibilityLabel("Pioneer")
+            VStack(spacing: 4) {
+                Text(robot.headline).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink)
+                Text(robot.subline).font(.footnote).foregroundStyle(Theme.ink2)
+                    .multilineTextAlignment(.center).lineLimit(2)
+            }
+            .padding(.horizontal, 28)
+            .padding(.bottom, 18)
+            actions.padding(.horizontal, 18)
+            list.padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 12)
+        }
+        .background(Theme.paper)
+        .fullScreenCover(isPresented: $showCapture) { CaptureView() }
+        .fullScreenCover(isPresented: $showMap) { MapScreen() }
+        .sendScanPicker(isPresented: $showSendPicker)
+        .task {
+            library.refresh()
+            await robot.refresh(robotURL, quiet: true)
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                await robot.refresh(robotURL, quiet: true)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(robot.pioneerName).font(Theme.display(32)).foregroundStyle(Theme.ink)
+                StatusLine(text: robot.statusText, color: robot.statusColor)
+            }
+            Spacer()
+            if !capture.hasLiDAR { Chip(text: "Photo mode", symbol: "camera").padding(.top, 8) }
+        }
+    }
+
+    private var actions: some View {
+        let state = robot.pioneerState
+        return HStack(spacing: 0) {
+            if state == .offline {
+                QuickAction(title: "Connect", symbol: "wifi", highlighted: true) { openRobotTab() }
+            } else {
+                QuickAction(title: state == .localized ? "Localize again" : "Localize", symbol: "scope",
+                            highlighted: robot.canLocalize, busy: state == .localizing) {
+                    Task { await robot.localizeRobot(robotURL) }
+                }
+                .disabled(!robot.canLocalize)
+            }
+            QuickAction(title: "Scan room", symbol: "viewfinder") { showCapture = true }
+            QuickAction(title: "Send scan", symbol: "square.and.arrow.up",
+                        busy: robot.busy?.hasPrefix("Sending") == true || state == .building) { showSendPicker = true }
+                .disabled(library.items.isEmpty || !robot.isConnected || state == .building)
+            QuickAction(title: "Map", symbol: "map") { showMap = true }
+        }
+    }
+
+    private var list: some View {
+        VStack(spacing: 0) {
+            ListRow(symbol: "map", title: "Map", subtitle: mapSubtitle) { showMap = true }
+            Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, 56)
+            ListRow(symbol: "viewfinder", title: "Scans", subtitle: scansSubtitle) { openScansTab() }
+        }
+        .paperCard(18)
+    }
+
+    private var mapSubtitle: String {
+        if let m = robot.status?.map { return "\(m) · on \(robot.pioneerName)" }
+        return robot.isConnected ? "No map on \(robot.pioneerName) yet" : "Connect to see Pioneer's map"
+    }
+
+    private var scansSubtitle: String {
+        let n = library.items.count
+        return n == 0 ? "None yet" : "\(n) on this iPhone"
+    }
+}
+
+/// Full-screen 3D map: the scan, the route, and where Pioneer and this phone are.
+struct MapScreen: View {
+    @EnvironmentObject private var capture: CaptureManager
+    @EnvironmentObject private var library: CaptureLibrary
+    @EnvironmentObject private var robot: RobotLink
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(CaptureSettings.Key.robotURL) private var robotURL = "http://pioneer.local:8770"
+
+    enum ViewMode: Hashable { case threeD, top }
+    @State private var mode: ViewMode = .threeD
+    @State private var command: MapCommand?
+    @State private var showCapture = false
+    @State private var showSendPicker = false
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            map.ignoresSafeArea(edges: .top)
+            VStack(spacing: 0) {
+                topBar.padding(.horizontal, 16).padding(.top, 8)
+                HStack { Spacer(); buttons }.padding(.horizontal, 16).padding(.top, 12)
+                Spacer(minLength: 0)
+                card
+            }
+        }
+        .background(Theme.paper)
+        .onChange(of: mode) { _, m in command = MapCommand(kind: m == .top ? .topDown : .recenter) }
+        .fullScreenCover(isPresented: $showCapture) { CaptureView() }
+        .sendScanPicker(isPresented: $showSendPicker)
+    }
+
+    private var topBar: some View {
+        HStack {
+            Button { dismiss() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.down").font(.system(size: 15, weight: .semibold))
+                    Text("Map").font(.system(size: 17, weight: .semibold))
+                }
+                .foregroundStyle(Theme.ink)
+                .padding(.vertical, 8).padding(.trailing, 8)
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            Segmented(options: [(ViewMode.threeD, "3D"), (ViewMode.top, "Top")], selection: $mode)
+                .frame(width: 130)
+                .opacity(robot.cloud == nil ? 0 : 1)
         }
     }
 
     @ViewBuilder
-    private var tiles: some View {
-        switch state {
-        case .offline:
-            Tile(title: "Scan room", symbol: "viewfinder") { showCapture = true }
-            Tile(title: "Connect", symbol: "wifi") { openRobotTab() }
-        case .noMap, .building:
-            Tile(title: "Scan room", symbol: "viewfinder") { showCapture = true }
-            Tile(title: "Send scan", symbol: "square.and.arrow.up", busy: robot.busy?.hasPrefix("Sending") == true || state == .building) {
-                showSendPicker = true
+    private var map: some View {
+        ZStack {
+            MapBackdrop()
+            if let cloud = robot.cloud, !cloud.points.isEmpty {
+                Map3DView(cloud: cloud, path: robot.scanPath,
+                          robot: robot.status?.last["robot"], phone: robot.status?.last["phone"],
+                          command: command)
+                    .padding(.bottom, 260)
+            } else if let grid = robot.status?.grid, let img = robot.topdownImage ?? robot.mapImage {
+                FloorMap(image: img, grid: grid, robot: robot.status?.last["robot"], phone: robot.status?.last["phone"])
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 300)
+                    .padding(.top, 100)
+            } else if robot.loadingMap {
+                ProgressView().padding(.bottom, 260)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "cube.transparent").font(.system(size: 32, weight: .ultraLight)).foregroundStyle(Theme.ink3)
+                    Text(robot.isConnected ? "No map yet" : "\(robot.pioneerName) is offline")
+                        .font(.subheadline).foregroundStyle(Theme.ink2)
+                }
+                .padding(.bottom, 280)
             }
-            .disabled(library.items.isEmpty || state == .building)
-        case .ready, .localizing, .localized, .failed:
-            Tile(title: state == .localized ? "Localize again" : "Localize", symbol: "scope", busy: state == .localizing) {
-                Task { await robot.localizeRobot(robotURL) }
-            }
-            .disabled(!canLocalize)
-            Tile(title: "Scan room", symbol: "viewfinder") { showCapture = true }
         }
     }
 
-    private var canLocalize: Bool { robot.isConnected && robot.status?.map != nil && robot.busy == nil }
+    private var buttons: some View {
+        VStack(spacing: 10) {
+            RoundButton(symbol: "location", label: "Find Pioneer") { command = MapCommand(kind: .locateRobot) }
+            RoundButton(symbol: "arrow.up.and.down.and.arrow.left.and.right", label: "Recenter") {
+                mode = .threeD
+                command = MapCommand(kind: .recenter)
+            }
+            RoundButton(symbol: "airplane", label: "Fly through the scan") { command = MapCommand(kind: .flyThrough) }
+                .disabled(robot.scanPath.count < 3)
+            RoundButton(symbol: "iphone", label: "Localize this phone") { localizePhone() }
+                .disabled(!robot.canLocalize)
+        }
+        .opacity(robot.cloud == nil ? 0 : 1)
+        .animation(.easeInOut(duration: 0.2), value: robot.cloud == nil)
+    }
+
+    private var card: some View {
+        let state = robot.pioneerState
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(robot.status?.map ?? "No map").font(Theme.display(24)).foregroundStyle(Theme.ink)
+                Spacer()
+                if let r = robot.status?.last["robot"], r.ok {
+                    Text("\(r.inliers) matches").font(.caption.weight(.medium)).foregroundStyle(Theme.ink3)
+                }
+            }
+            StatusLine(text: robot.headline, color: robot.statusColor).padding(.top, 6)
+            if state == .localized, let r = robot.status?.last["robot"] {
+                HStack(spacing: 26) {
+                    StatView(value: String(format: "%.2f", r.x), unit: "m", label: "X")
+                    StatView(value: String(format: "%.2f", r.y), unit: "m", label: "Y")
+                    StatView(value: String(format: "%.0f", r.yaw_deg), unit: "°", label: "Heading")
+                }
+                .padding(.top, 16)
+            } else {
+                Text(robot.subline).font(.subheadline).foregroundStyle(Theme.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 10)
+            }
+            HStack(spacing: 10) { buttonsRow(state) }.padding(.top, 22)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        .padding(.bottom, 14)
+        .background(
+            UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28, style: .continuous)
+                .fill(Theme.card)
+                .shadow(color: .black.opacity(0.08), radius: 20, y: -4)
+                .ignoresSafeArea(edges: .bottom)
+        )
+    }
+
+    @ViewBuilder
+    private func buttonsRow(_ state: PioneerState) -> some View {
+        switch state {
+        case .offline, .noMap, .building:
+            Tile(title: "Scan room", symbol: "viewfinder", prominent: true) { showCapture = true }
+            Tile(title: "Send scan", symbol: "square.and.arrow.up",
+                 busy: robot.busy?.hasPrefix("Sending") == true || state == .building) { showSendPicker = true }
+                .disabled(library.items.isEmpty || !robot.isConnected || state == .building)
+        case .ready, .localizing, .localized, .failed:
+            Tile(title: state == .localized ? "Localize again" : "Localize", symbol: "scope",
+                 prominent: true, busy: state == .localizing) {
+                Task { await robot.localizeRobot(robotURL) }
+            }
+            .disabled(!robot.canLocalize)
+            Tile(title: "Send scan", symbol: "square.and.arrow.up",
+                 busy: robot.busy?.hasPrefix("Sending") == true) { showSendPicker = true }
+                .disabled(library.items.isEmpty)
+        }
+    }
 
     /// The camera only runs while scanning, so start it briefly, take one frame, and stop it again.
     private func localizePhone() {
@@ -224,4 +330,32 @@ struct HomeView: View {
             await robot.localizePhone(robotURL, snapshot: snap)
         }
     }
+}
+
+/// "Send a scan to Pioneer": pick one of the recent complete scans and upload it.
+private struct SendScanPicker: ViewModifier {
+    @Binding var isPresented: Bool
+    @EnvironmentObject private var library: CaptureLibrary
+    @EnvironmentObject private var robot: RobotLink
+    @AppStorage(CaptureSettings.Key.robotURL) private var robotURL = "http://pioneer.local:8770"
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog("Send a scan to Pioneer", isPresented: $isPresented, titleVisibility: .visible) {
+            ForEach(Array(library.items.filter(\.isComplete).prefix(8))) { item in
+                Button("\(item.date.formatted(date: .abbreviated, time: .shortened)) · \(item.frameCount) frames") {
+                    Task {
+                        if let zip = try? await library.makeZip(item) {
+                            await robot.sendScan(robotURL, zip: zip, name: item.name)
+                        }
+                    }
+                }
+            }
+        } message: {
+            Text("Pioneer rebuilds it in 3D and makes a map it can find itself in. Takes a few minutes.")
+        }
+    }
+}
+
+extension View {
+    func sendScanPicker(isPresented: Binding<Bool>) -> some View { modifier(SendScanPicker(isPresented: isPresented)) }
 }
