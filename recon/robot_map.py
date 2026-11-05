@@ -215,15 +215,18 @@ def find_glass_walls(Pw, Cw, z_band=(0.2, 2.2), thr=0.05, min_inliers=200, min_l
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
           robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2,
           below_floor=0.05, obst_ratio=0.5, reach_radius=3.5, detect_glass=True,
-          metric_scale=False):
+          metric_scale=False, floor_ref=None):
     out.mkdir(parents=True, exist_ok=True)
     P, C = read_ply(ply)
+    # Floor / gravity can come from a larger cloud in the same coordinates (e.g. the full
+    # scan when mapping a sub-section of it): a subset may barely see the floor.
+    P_floor = read_ply(floor_ref)[0] if floor_ref else P
     cams = json.loads(Path(cameras_json).read_text())
     Rs = np.array([c["R"] for c in cams])
     Cs = np.array([c["C"] for c in cams])
     up0 = np.array([0.0, 1.0, 0.0])  # ARKit world: +Y is gravity-up, exactly
     if metric:
-        n, d, frac = fit_floor(P, up0, Cs)
+        n, d, frac = fit_floor(P_floor, up0, Cs)
     else:
         # Image-up is usually world-up (phone held upright), but not if the video's
         # rotation flag was wrong or the phone was sideways. Try every camera axis as
@@ -235,7 +238,7 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
                 continue
             cand /= np.linalg.norm(cand)
             try:
-                n_, d_, f_ = fit_floor(P, cand, Cs)
+                n_, d_, f_ = fit_floor(P_floor, cand, Cs)
             except (TypeError, ValueError):
                 continue
             above = np.median(Cs @ n_ + d_) > 0
@@ -445,5 +448,7 @@ if __name__ == "__main__":
     ap.add_argument("--phone-height", type=float, default=1.4)
     ap.add_argument("--metric", action="store_true", help="input is already metric (ARKit)")
     ap.add_argument("--cell", type=float, default=0.05)
+    ap.add_argument("--floor-ref", type=Path, default=None,
+                    help="larger cloud in the same coordinates to take the floor/gravity from")
     a = ap.parse_args()
-    build(a.ply, a.cameras, a.out, a.phone_height, a.metric, a.cell)
+    build(a.ply, a.cameras, a.out, a.phone_height, a.metric, a.cell, floor_ref=a.floor_ref)
