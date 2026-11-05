@@ -21,6 +21,18 @@ bash gpu/run_gpu.sh /path/to/IMG_6070.MOV            # apartment
 
 Outputs land in `out_vipe/<name>/` with the same layout as `out/<name>/` (`viewer/`, `robot/`, `dense/`), so `ros2/pioneer_map` works on them unchanged.
 
+## Gaussian splat (photoreal fly-through)
+
+```bash
+bash gpu/splat.sh IMG_6077              # after run_gpu.sh: ViPE poses + depth-initialised splats
+SOURCE=cpu bash gpu/splat.sh IMG_6077   # or the CPU pipeline's poses (out/IMG_6077)
+STEPS=7000 bash gpu/splat.sh IMG_6077   # quick preview
+```
+
+`gpu/to_colmap.py` writes the scan as a COLMAP model (binary + text) plus an images folder. `splat.sh` then trains [gsplat](https://github.com/nerfstudio-project/gsplat) v1.4.0's `simple_trainer.py` on it. Results go to `out_splat/<name>/`: a fly-through `videos/traj_*.mp4`, PSNR/SSIM in `stats/`, and a checkpoint for gsplat's interactive `simple_viewer.py`. The splat is for looking at. The robot still navigates on the TSDF mesh and occupancy grid: splat geometry is soft blobs and has the same blind spots on plain walls and glass.
+
+Tested here (no GPU): both exports (CPU SfM and the fake ViPE folder) read back with the same binary layout gsplat's COLMAP loader uses, and camera poses match the source to within 1e-13. The training itself has not been run here.
+
 ## What to bring / expect
 
 - **GPU:** any recent NVIDIA card with >= 12 GB VRAM should do. ViPE downloads its model weights from Hugging Face on the first run (needs internet).
