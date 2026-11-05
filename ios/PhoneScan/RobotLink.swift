@@ -40,9 +40,17 @@ final class RobotLink: ObservableObject {
         let id: String
     }
 
+    /// Whether the robot's camera can be watched live (/camera/stream).
+    struct Live: Codable, Equatable {
+        let available: Bool
+        let viewers: Int?
+        let fps: Double?
+    }
+
     struct Status: Codable, Equatable {
         let name: String
         let robot: RobotInfo?
+        let live: Live?
         let map: String?
         let maps: [String]
         let camera: String

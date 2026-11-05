@@ -148,10 +148,11 @@ In the app, open the **Robot** tab and connect to `http://<robot>:8770`; then us
 
 * **Localize robot**: the robot grabs a frame from its camera (the Pioneer's D455) and localizes it. With `--ros`, the fix is published as `/initialpose` (`PoseWithCovarianceStamped`, frame `map`), so nav2's AMCL or the robot's own SLAM can start, or restart, in the phone-built map. The camera pose also goes out on `/pioneer_home/camera_pose`.
 * **Localize this phone**: sends the phone's current camera view instead. You can test the whole loop with just a phone, before the robot is involved.
+* **Live camera**: the video button on Home opens Pioneer's view, the robot camera's live feed (`GET /camera/stream`, MJPEG at about 10 fps, at most 960 px wide; one capture thread shared by all viewers, which only runs while someone is watching). **Localize from this view** runs a fix on what it shows.
 * **Send a scan to the robot**: uploads a capture; the robot runs `run.py --arkit` and builds the relocalization map itself.
 * The 3D map shows both positions and headings (`/map/cloud.ply`, `/map/path.json`, `/map/topdown.png` feed it).
 
-HTTP API (for other clients): `GET /status`, `GET /maps`, `POST /maps/activate?name=`, `GET /map/info`, `GET /map/occupancy.png`, `POST /localize?source=robot|phone` (phone: JPEG body + `X-Fx X-Fy X-Cx X-Cy` headers), `POST /upload`.
+HTTP API (for other clients): `GET /status`, `GET /camera/stream`, `GET /camera/snapshot.jpg`, `GET /maps`, `POST /maps/activate?name=`, `GET /map/info`, `GET /map/occupancy.png`, `POST /localize?source=robot|phone` (phone: JPEG body + `X-Fx X-Fy X-Cx X-Cy` headers), `POST /upload`.
 
 Tested (`python tests/test_robot_link.py`, also in CI): views that were never keyframes, taken with a different camera, localize to **≤ 5 cm and ≤ 2°**, about 0.2 s each on a laptop CPU. Images from elsewhere are rejected with a reason. Through the full `robot_map.py` frame (synthetic 48-frame app capture), 4 new views landed within 0.5–4.4 cm, with correct height above the floor. Not yet tested on the real robot or with the D455. Localization needs texture: blank walls give too few landmarks, just as they do for SfM.
 

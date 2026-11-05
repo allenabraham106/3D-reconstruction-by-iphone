@@ -14,6 +14,7 @@ import math
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -217,6 +218,43 @@ class RobotLinkTests(unittest.TestCase):
         # without a model the server says so, and the app falls back to its Pioneer
         bare = server.RobotLink(self.root, "Pioneer", server.Camera(), None, self.root / "captures")
         self.assertIsNone(bare.status()["robot"])
+
+    def test_live_camera_stream(self):
+        img, _, _ = self.queries[0]
+        path = self.root / "live_cam.jpg"
+        cv2.imwrite(str(path), img)
+        link = server.RobotLink(self.root, "Pioneer", server.FileCamera(str(path), QK), None, self.root / "captures")
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(link))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            snap = urllib.request.urlopen(base + "/camera/snapshot.jpg").read()
+            self.assertEqual(snap[:2], b"\xff\xd8")
+            self.assertEqual(cv2.imdecode(np.frombuffer(snap, np.uint8), cv2.IMREAD_COLOR).shape[1], 800)  # <= 960 kept
+
+            resp = urllib.request.urlopen(base + "/camera/stream", timeout=10)
+            self.assertIn("multipart/x-mixed-replace", resp.headers["Content-Type"])
+            buf, frames, t0 = b"", 0, time.time()
+            while frames < 3 and time.time() - t0 < 8:
+                buf += resp.read1(65536)
+                while (i := buf.find(b"\xff\xd8")) >= 0 and (j := buf.find(b"\xff\xd9", i)) >= 0:
+                    frame = cv2.imdecode(np.frombuffer(buf[i:j + 2], np.uint8), cv2.IMREAD_COLOR)
+                    self.assertIsNotNone(frame)
+                    frames += 1
+                    buf = buf[j + 2:]
+            self.assertGreaterEqual(frames, 3)
+            self.assertEqual(json.loads(urllib.request.urlopen(base + "/status").read())["live"]["viewers"], 1)
+            resp.close()
+            t0 = time.time()
+            while link.frames.viewers and time.time() - t0 < 5:   # the grab thread stops when nobody watches
+                time.sleep(0.1)
+            self.assertEqual(link.frames.viewers, 0)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        # no camera configured: a clear 503, and the app knows not to offer the feed
+        bare = server.RobotLink(self.root, "Pioneer", server.Camera(), None, self.root / "captures")
+        self.assertFalse(bare.status()["live"]["available"])
 
     def test_base_pose_from_camera_mount(self):
         # A camera 1.45 m up, looking straight along the robot's +x, puts the base at z=0 with the same heading.

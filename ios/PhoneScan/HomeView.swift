@@ -14,6 +14,7 @@ struct HomeView: View {
     @State private var showSendPicker = false
     @State private var command: MapCommand?
     @State private var topView = false
+    @State private var showLive = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -31,6 +32,7 @@ struct HomeView: View {
         }
         .background(Theme.paper)
         .fullScreenCover(isPresented: $showCapture) { CaptureView() }
+        .fullScreenCover(isPresented: $showLive) { LiveFeedView() }
         .confirmationDialog("Send a scan to Pioneer", isPresented: $showSendPicker, titleVisibility: .visible) {
             ForEach(Array(library.items.filter(\.isComplete).prefix(8))) { item in
                 Button("\(item.date.formatted(date: .abbreviated, time: .shortened)) · \(item.frameCount) frames") {
@@ -98,7 +100,10 @@ struct HomeView: View {
             }
             RoundButton(symbol: "airplane", label: "Fly through the scan") { command = MapCommand(kind: .flyThrough) }
                 .disabled(robot.scanPath.count < 3)
-            RoundButton(symbol: "video", label: "Localize this phone") { localizePhone() }
+            RoundButton(symbol: "video", label: "Pioneer's live camera") { showLive = true }
+                .disabled(robot.status?.live?.available != true)
+                .opacity(robot.status?.live?.available == true ? 1 : 0.4)
+            RoundButton(symbol: "iphone.gen3", label: "Localize this phone") { localizePhone() }
                 .disabled(!canLocalize)
         }
         .opacity(robot.cloud == nil ? 0.0 : 1)
