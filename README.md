@@ -195,6 +195,27 @@ Tested (`python tests/test_robot_link.py`, also in CI): views that were never ke
 
 <br clear="right">
 
+## Bring your own humanoid
+
+<img src="docs/images/pioneer-home/byo-humanoids.webp" width="560">
+
+*Two URDFs through the same converter, posed mid-stride by the app's walking logic: a leg-only humanoid (as another team's `--robot-urdf` would arrive) and the built-in Pioneer.*
+
+Pioneer Home isn't tied to the Pioneer. Any team can use it with their own robot: start the robot link with your URDF, and the app draws **your** robot (its CAD meshes, colours and name) on the 3D map, walking to each localization fix. No app update is needed.
+
+```bash
+python -m robot_link.server --maps out --robot-urdf ~/my_robot/urdf/my_robot.urdf --name "Atlas" \
+    --robot-forward +x --camera ros:/head_camera/color/image_raw --ros --base-from-camera "0.1 0 1.55 0 15 0"
+```
+
+* **What's needed**: a URDF with mesh visuals (STL / OBJ / DAE / GLB). It's converted once (`tools/urdf_to_app_model.py`: decimated to ~90k triangles, every joint kept) and cached under `out/_robots/`. The app downloads it from `GET /robot/model` on connect and caches it by content id.
+* **Facing**: `--robot-forward` is the URDF axis the robot faces. REP-103 robots face `+x` (the default); the Pioneer faces `-y`.
+* **Walking**: the app animates hip pitch, knee, ankle pitch, shoulder pitch and finger curl. They're found from common joint names (`left_hip_pitch_joint`, `l_knee`, `Knee_L`, `r_mcp`, ...); the converter prints what it found. If yours differ, pass `--robot-gait roles.json`, e.g. `{"knee": {"left": "LKneePitch", "right": "RKneePitch"}}`.
+* **Camera**: any RealSense, or any ROS 2 image topic with `camera_info`. Set `--base-from-camera` to where it's mounted, so `/initialpose` is the robot base, not the camera.
+* Without `--robot-urdf`, the app shows its built-in Pioneer.
+
+Tested with a different made-up humanoid (`tests/test_robot_link.py::test_bring_your_own_humanoid`: REP-103 joint names, facing +x). It converts, its walking joints are detected, and the server sends it to the app.
+
 ## Capture tips
 
 - Walk **slowly**, and move the phone **sideways** through the space rather than standing still and panning. Stereo and SfM need parallax. Keep the same slow pace in hallways (the apartment hallway was walked twice as fast and got half the depth).

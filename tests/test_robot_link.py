@@ -168,6 +168,56 @@ class RobotLinkTests(unittest.TestCase):
             (self.out / "robot" / "topdown.png").unlink(missing_ok=True)
             (self.out / "robot" / "cloud_app.ply").unlink(missing_ok=True)
 
+    def test_bring_your_own_humanoid(self):
+        """Another team's URDF (REP-103 names, faces +x, box meshes) converts, is served, and walks."""
+        import trimesh
+        sys.path.insert(0, str(HERE.parent / "tools"))
+        from urdf_to_app_model import convert
+        d = self.root / "acme_bot"
+        (d / "meshes").mkdir(parents=True)
+        trimesh.creation.box((0.3, 0.2, 0.5)).export(d / "meshes" / "torso.stl")
+        trimesh.creation.box((0.08, 0.08, 0.4)).export(d / "meshes" / "leg.stl")
+        def link(n, mesh, z=0.0):
+            return (f'<link name="{n}"><visual><origin xyz="0 0 {z}"/><geometry><mesh filename="meshes/{mesh}.stl"/>'
+                    f'</geometry><material name="m"><color rgba="0.8 0.2 0.2 1"/></material></visual></link>')
+        def joint(n, parent, child, xyz, lo, hi):
+            return (f'<joint name="{n}" type="revolute"><parent link="{parent}"/><child link="{child}"/>'
+                    f'<origin xyz="{xyz}"/><axis xyz="0 1 0"/><limit lower="{lo}" upper="{hi}" effort="1" velocity="1"/></joint>')
+        parts = [link("base_link", "torso", 1.05)]
+        for side, y in (("left", 0.1), ("right", -0.1)):
+            parts += [link(f"{side}_thigh", "leg", -0.2), link(f"{side}_shin", "leg", -0.2), link(f"{side}_foot", "leg", -0.02),
+                      joint(f"{side}_hip_pitch_joint", "base_link", f"{side}_thigh", f"0 {y} 0.8", -1.5, 0.5),
+                      joint(f"{side}_knee_joint", f"{side}_thigh", f"{side}_shin", "0 0 -0.4", 0.0, 2.3),
+                      joint(f"{side}_ankle_pitch_joint", f"{side}_shin", f"{side}_foot", "0 0 -0.4", -0.6, 0.6)]
+        urdf = d / "acme_bot.urdf"
+        urdf.write_text('<robot name="acme_bot">' + "".join(parts) + "</robot>")
+
+        info = convert(urdf, d / "acme.robot", verbose=False)
+        self.assertEqual(info["name"], "acme_bot")
+        self.assertEqual(info["gait"]["hip_pitch"], {"left": "left_hip_pitch_joint", "right": "right_hip_pitch_joint"})
+        self.assertEqual(info["gait"]["knee"]["right"], "right_knee_joint")
+        self.assertEqual(info["gait"]["ankle_pitch"]["left"], "left_ankle_pitch_joint")
+
+        cached = server.prepare_robot_model(urdf, self.root / "_robots", name="Acme Walker")
+        self.assertEqual(server.prepare_robot_model(urdf, self.root / "_robots", name="Acme Walker"), cached)  # cached
+        link_ = server.RobotLink(self.root, "Acme Walker", server.Camera(), None, self.root / "captures", cached)
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(link_))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{httpd.server_port}"
+            st = json.loads(urllib.request.urlopen(base + "/status").read())
+            self.assertEqual(st["robot"]["name"], "Acme Walker")
+            self.assertEqual(st["robot"]["joints"], 6)
+            model = urllib.request.urlopen(base + "/robot/model").read()
+            self.assertEqual(model, cached.read_bytes())
+            self.assertEqual(model[:4], b"PRBT")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        # without a model the server says so, and the app falls back to its Pioneer
+        bare = server.RobotLink(self.root, "Pioneer", server.Camera(), None, self.root / "captures")
+        self.assertIsNone(bare.status()["robot"])
+
     def test_base_pose_from_camera_mount(self):
         # A camera 1.45 m up, looking straight along the robot's +x, puts the base at z=0 with the same heading.
         T = server.base_from_camera_matrix("0.08 0 1.45 0 0 0")

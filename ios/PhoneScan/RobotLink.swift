@@ -32,8 +32,17 @@ final class RobotLink: ObservableObject {
         let seconds: Double?
     }
 
+    /// The robot's own 3D model, if its robot link was started with --robot-urdf.
+    struct RobotInfo: Codable, Equatable {
+        let name: String?
+        let height: Double?
+        let joints: Int?
+        let id: String
+    }
+
     struct Status: Codable, Equatable {
         let name: String
+        let robot: RobotInfo?
         let map: String?
         let maps: [String]
         let camera: String
@@ -54,6 +63,8 @@ final class RobotLink: ObservableObject {
     @Published private(set) var cloud: PointCloud?
     @Published private(set) var scanPath: [SIMD3<Float>] = []
     @Published private(set) var loadingMap = false
+    /// The connected robot's model (.robot bytes) and its id; nil means "draw the built-in Pioneer".
+    @Published private(set) var robotModel: (id: String, data: Data)?
     @Published private(set) var lastResult: Pose?
     @Published private(set) var busy: String?
     @Published var error: String?
@@ -83,6 +94,7 @@ final class RobotLink: ObservableObject {
             status = st
             connection = .connected
             if st.map != mapImageFor { await loadMapImage(url, map: st.map) }
+            if st.robot?.id != robotModel?.id { await loadRobotModel(url, info: st.robot) }
         } catch {
             connection = .failed(quiet ? "Lost connection" : "Can't reach \(url.host ?? urlString). Is the robot link running and on the same Wi-Fi?")
         }
@@ -114,6 +126,26 @@ final class RobotLink: ObservableObject {
         }
         if let (data, _) = try? await URLSession.shared.data(from: url.appendingPathComponent("map/topdown.png")) {
             topdownImage = UIImage(data: data)
+        }
+    }
+
+    /// Downloads the robot's model once per id and keeps it in Caches, so reconnecting is instant.
+    private func loadRobotModel(_ url: URL, info: RobotInfo?) async {
+        guard let info else { robotModel = nil; return }
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("RobotModels", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("\(info.id).robot")
+        if let data = try? Data(contentsOf: file) {
+            robotModel = (info.id, data)
+            return
+        }
+        var req = URLRequest(url: url.appendingPathComponent("robot/model"))
+        req.timeoutInterval = 60
+        if let (data, resp) = try? await URLSession.shared.data(for: req),
+           (resp as? HTTPURLResponse)?.statusCode == 200, data.prefix(4) == Data("PRBT".utf8) {
+            try? data.write(to: file)
+            robotModel = (info.id, data)
         }
     }
 
