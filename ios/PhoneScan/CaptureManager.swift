@@ -1,4 +1,6 @@
 import ARKit
+import CoreImage
+import ImageIO
 import Combine
 import UIKit
 import simd
@@ -11,6 +13,8 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
     let session = ARSession()
 
     @Published private(set) var isRecording = false
+    /// Recording, but not saving keyframes (the user tapped PAUSE).
+    @Published var isPaused = false
     @Published private(set) var isFinishing = false
     @Published private(set) var frameCount = 0
     @Published private(set) var elapsedSeconds = 0
@@ -162,6 +166,7 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
         pace = .good
         guidance = .start
         startDate = Date()
+        isPaused = false
         isRecording = true
         UIApplication.shared.isIdleTimerDisabled = true
     }
@@ -219,7 +224,7 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
         lastPosition = position
         updateHUD(frame: frame, pose: pose, position: position)
 
-        guard isKeyframe(pose: pose, time: frame.timestamp) else { return }
+        guard !isPaused, isKeyframe(pose: pose, time: frame.timestamp) else { return }
 
         // Back-pressure: if encoding falls behind, skip rather than holding ARKit's buffers.
         guard writer.pendingCount < 3 else {
@@ -251,6 +256,23 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool { true }
+
+    // MARK: Robot localization
+
+    /// The current camera frame as a JPEG plus its intrinsics, for "Localize this phone".
+    /// The image stays in the sensor's landscape orientation; the intrinsics match it.
+    func snapshotForLocalization() -> (jpeg: Data, fx: Float, fy: Float, cx: Float, cy: Float)? {
+        guard let frame = session.currentFrame else { return nil }
+        let K = frame.camera.intrinsics
+        let image = CIImage(cvPixelBuffer: frame.capturedImage)
+        let key = CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String)
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let data = snapshotContext.jpegRepresentation(of: image, colorSpace: space, options: [key: 0.85])
+        else { return nil }
+        return (data, K[0][0], K[1][1], K[2][0], K[2][1])
+    }
+
+    private lazy var snapshotContext = CIContext()
 
     // MARK: HUD
 

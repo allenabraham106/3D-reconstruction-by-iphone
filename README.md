@@ -153,19 +153,47 @@ This serves `/map` (nav2 `map_server`, 5 cm occupancy grid), `/pioneer/voxels` (
 
 **Pioneer Home** is the capture app for the Pioneer humanoid: SwiftUI + ARKit, iOS 17+, in WATonomous colours. You walk a room, and it saves keyframes with ARKit's metric, gravity-aligned camera poses (plus LiDAR depth and mesh on Pro iPhones). Then you AirDrop or upload the scan and run `python run.py <capture> --arkit`. Setup, capture format and details are in [`ios/README.md`](ios/README.md) and [`docs/PHONESCAN.md`](docs/PHONESCAN.md). (The Xcode project and folders keep the code name `PhoneScan`.)
 
-| <img src="docs/images/pioneer-home/tutorial.webp" width="180"> | <img src="docs/images/pioneer-home/recording.webp" width="180"> | <img src="docs/images/pioneer-home/head-back.webp" width="180"> | <img src="docs/images/pioneer-home/captures.webp" width="180"> |
+| <img src="docs/images/pioneer-home/home.webp" width="180"> | <img src="docs/images/pioneer-home/mapping.webp" width="180"> | <img src="docs/images/pioneer-home/scans.webp" width="180"> | <img src="docs/images/pioneer-home/on-pioneer.webp" width="180"> |
 |:-:|:-:|:-:|:-:|
-| Tutorial | Recording: tips, mini-map, meters | "Head back to start" | Captures |
+| Home: 3D map, Pioneer localized | Mapping | My Scans | Maps on Pioneer |
 
 *Mockups drawn from the SwiftUI code; the app compiles in CI but hasn't run on a phone yet.*
 
-While you scan, it guides you live: a tip card (too fast, low detail, tilt up and down, head back to start, loop closed), a top-down mini-map of your walk, Pace and Detail meters, ARKit tracking dots on iPhones without LiDAR, and a flash and haptics on each saved frame. On first launch, a short tutorial explains how to scan well. Settings offers Quick / Balanced / Detailed presets.
+**Home** is the robot's 3D map: the scan as a coloured point cloud you can orbit (walls cut at 1.4 m so you see into the room), the scan route as a trail, and **Pioneer itself, built from its URDF** (`pioneer_whole_body_humanoid.urdf`: hands, every finger joint, 6-joint legs), standing where it last localized and walking to each new fix. Round buttons find Pioneer, switch top / 3D view, recenter, fly through the scan, and localize the phone. Below the map, status chips (Connected, Localized, ROS), a headline, and two big actions that follow Pioneer's state.
+
+**Mapping** guides you live (too fast, low detail, tilt up and down, head back to start, loop closed) with a mini-map, Pace and Detail meters, ARKit tracking dots on iPhones without LiDAR, and **Pause** / **Stop**. **My Scans** lists what's on the phone and on Pioneer (pick the active map). The robot model comes from `tools/urdf_to_app_model.py` (1.2M CAD triangles → 90k, every joint kept); the source URDF is Apache-2.0, from [WATonomous/pioneer_humanoid](https://github.com/WATonomous/pioneer_humanoid). Headlines use the WATonomous font if a `.otf`/`.ttf` is dropped into `ios/PhoneScan/`, else SF Pro Expanded.
 
 In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, scan, then AirDrop or upload the capture and run `python run.py <capture> --arkit`. Its upload receiver can run that automatically: `python3 tools/receive_server.py --on-upload "python run.py {dir} --arkit"`.
 
 `ios/ScanCapture/` + `ios/project.yml` is an earlier, smaller prototype that writes `frames.jsonl` + raw `.bin` depth. The pipeline reads both formats.
 
 > Pioneer Home compiles in CI (GitHub Actions, Xcode on macOS) but hasn't run on a device yet. The Python side is tested against synthetic captures in both apps' exact formats. Expect a small fix or two on first build.
+
+## Robot link: localize the robot in the phone's map (`robot_link/`)
+
+<img src="docs/images/pioneer-home/home.webp" width="220" align="right">
+
+The phone builds the map, and the robot localizes itself in it. `robot_link` turns a `run.py` output into a **relocalization map**: SIFT landmarks triangulated from the keyframes at their known poses, in the robot map frame (metres, Z up, floor at Z = 0, the same frame as `occupancy.yaml`). Localizing a new camera image is then one PnP + RANSAC solve, with no SfM on the robot.
+
+```bash
+python -m robot_link.reloc_map out/living-room          # once per map (seconds)
+python -m robot_link.server --maps out --camera realsense --ros
+#   --camera ros:/camera/color/image_raw   use a ROS 2 image topic (+ camera_info) instead
+#   --base-from-camera "0.08 0 1.45 0 0 0"  camera mount on the base (m, deg)
+```
+
+In the app, open the **Robot** tab and connect to `http://<robot>:8770`; then use Home:
+
+* **Localize robot**: the robot grabs a frame from its camera (the Pioneer's D455) and localizes it. With `--ros`, the fix is published as `/initialpose` (`PoseWithCovarianceStamped`, frame `map`), so nav2's AMCL or the robot's own SLAM can start, or restart, in the phone-built map. The camera pose also goes out on `/pioneer_home/camera_pose`.
+* **Localize this phone**: sends the phone's current camera view instead. You can test the whole loop with just a phone, before the robot is involved.
+* **Send a scan to the robot**: uploads a capture; the robot runs `run.py --arkit` and builds the relocalization map itself.
+* The 3D map shows both positions and headings (`/map/cloud.ply`, `/map/path.json`, `/map/topdown.png` feed it).
+
+HTTP API (for other clients): `GET /status`, `GET /maps`, `POST /maps/activate?name=`, `GET /map/info`, `GET /map/occupancy.png`, `POST /localize?source=robot|phone` (phone: JPEG body + `X-Fx X-Fy X-Cx X-Cy` headers), `POST /upload`.
+
+Tested (`python tests/test_robot_link.py`, also in CI): views that were never keyframes, taken with a different camera, localize to **≤ 5 cm and ≤ 2°**, about 0.2 s each on a laptop CPU. Images from elsewhere are rejected with a reason. Through the full `robot_map.py` frame (synthetic 48-frame app capture), 4 new views landed within 0.5–4.4 cm, with correct height above the floor. Not yet tested on the real robot or with the D455. Localization needs texture: blank walls give too few landmarks, just as they do for SfM.
+
+<br clear="right">
 
 ## Capture tips
 

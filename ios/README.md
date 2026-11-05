@@ -30,15 +30,17 @@ Requires iOS 17 or later and Xcode 16 or later.
 Mockups drawn from the SwiftUI code. The app compiles in CI but hasn't run on a phone yet.
 Full documentation: [`docs/PHONESCAN.md`](../docs/PHONESCAN.md).
 
-| <img src="../docs/images/pioneer-home/tutorial.webp" width="180"> | <img src="../docs/images/pioneer-home/recording.webp" width="180"> | <img src="../docs/images/pioneer-home/head-back.webp" width="180"> | <img src="../docs/images/pioneer-home/captures.webp" width="180"> |
+| <img src="../docs/images/pioneer-home/home.webp" width="180"> | <img src="../docs/images/pioneer-home/mapping.webp" width="180"> | <img src="../docs/images/pioneer-home/scans.webp" width="180"> | <img src="../docs/images/pioneer-home/on-pioneer.webp" width="180"> |
 |:-:|:-:|:-:|:-:|
-| Tutorial | Recording: tips, mini-map, meters | "Head back to start" | Captures |
+| Home: 3D map, Pioneer localized | Mapping | My Scans | Maps on Pioneer |
 
-| <img src="../docs/images/pioneer-home/ready.webp" width="180"> | <img src="../docs/images/pioneer-home/too-fast.webp" width="180"> | <img src="../docs/images/pioneer-home/settings.webp" width="180"> | <img src="../docs/images/pioneer-home/home-screen.webp" width="180"> |
-|:-:|:-:|:-:|:-:|
-| Ready (iPhone 17, tracking dots) | Too-fast warning | Settings presets | Home-screen icon |
+<img src="../docs/images/pioneer-home/pioneer-model.webp" width="200"> <img src="../docs/images/pioneer-home/tutorial.webp" width="180">
 
-The look comes from WATonomous: logo blue `#1E5E96`, lantern teal `#5CC0C8`, night navy `#0E2230` and shop-light amber `#E3A867`, all in [`PhoneScan/Theme.swift`](PhoneScan/Theme.swift). The icon is the Pioneer plushie's helmet.
+*The Pioneer model the app draws (from the URDF), and the tutorial.*
+
+**Robot tab**: connect to `robot_link.server` on the robot; Home then localizes Pioneer (or this phone) and shows it on the 3D map. See "Robot link" in the main README.
+
+The look: white surfaces, ink text, hairline borders, small monospace captions and colour only for state (green = connected, WATonomous blue `#1E5E96` = what Pioneer is doing), all in [`PhoneScan/Theme.swift`](PhoneScan/Theme.swift). The icon is the Pioneer plushie's helmet.
 
 ## Install on your iPhone
 

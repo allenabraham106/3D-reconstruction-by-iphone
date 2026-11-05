@@ -31,63 +31,64 @@ struct OnboardingView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Wordmark()
+                Text("Pioneer Home").monoLabel(11)
                 Spacer()
-                Button("Skip", action: done).foregroundStyle(.secondary)
+                Button("Skip", action: done).font(.subheadline).foregroundStyle(Theme.ink2)
             }
             .padding(.horizontal, 24)
-            .padding(.top, 12)
+            .padding(.top, 14)
+
             TabView(selection: $page) {
                 ForEach(steps) { step in
-                    VStack(spacing: 22) {
+                    VStack(alignment: .leading, spacing: 18) {
                         Spacer()
-                        ZStack {
-                            Circle().fill(Theme.teal.opacity(0.12)).frame(width: 170, height: 170)
-                                .blur(radius: 18)
-                            Circle().fill(Theme.surface).frame(width: 150, height: 150)
-                                .overlay(Circle().stroke(Theme.teal.opacity(0.45), lineWidth: 1.5))
-                            Image(systemName: step.symbol)
-                                .font(.system(size: 60, weight: .semibold))
-                                .foregroundStyle(Theme.teal)
-                                .symbolRenderingMode(.hierarchical)
-                        }
+                        Image(systemName: step.symbol)
+                            .font(.system(size: 44, weight: .ultraLight))
+                            .foregroundStyle(Theme.ink)
+                            .frame(width: 96, height: 96)
+                            .paperCard(20)
+                        Text(String(format: "%02d / %02d", step.id + 1, steps.count)).monoLabel(11, color: Theme.ink2)
                         Text(step.title)
-                            .font(.system(size: 30, weight: .heavy))
-                            .fontWidth(.expanded)
-                            .multilineTextAlignment(.center)
+                            .font(Theme.display(32))
+                            .foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(step.body)
                             .font(.body)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
+                            .foregroundStyle(Theme.ink2)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer()
                         Spacer()
                     }
+                    .padding(.horizontal, 28)
                     .tag(step.id)
                 }
             }
-            .tabViewStyle(.page(indexDisplayMode: .always))
-            .indexViewStyle(.page(backgroundDisplayMode: .always))
+            .tabViewStyle(.page(indexDisplayMode: .never))
+
+            HStack(spacing: 6) {
+                ForEach(steps) { s in
+                    Capsule().fill(s.id == page ? Theme.ink : Theme.line).frame(width: s.id == page ? 18 : 6, height: 6)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: page)
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 18)
 
             Button {
                 if page < steps.count - 1 { withAnimation { page += 1 } } else { done() }
             } label: {
-                Text(page < steps.count - 1 ? "Next" : "Start scanning")
-                    .font(.headline)
-                    .watoLabel()
+                Text(page < steps.count - 1 ? "Next" : "Start")
+                    .monoLabel(13, color: Theme.card)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(Theme.primary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .foregroundStyle(.white)
+                    .background(Theme.ink, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
+            .buttonStyle(.plain)
             .padding(.horizontal, 24)
-            .padding(.bottom, 24)
+            .padding(.bottom, 20)
         }
-        .background(
-            LinearGradient(colors: [Theme.navy, Color(hex: 0x07131B)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-        )
+        .background(Theme.paper.ignoresSafeArea())
     }
 }

@@ -2,9 +2,9 @@ name: PhoneScan
 
 on:
   push:
-    paths: ["ios/**", "tools/**", ".github/workflows/phonescan.yml"]
+    paths: ["ios/**", "tools/**", "robot_link/**", "tests/test_robot_link.py", "tests/synthetic_room.py", ".github/workflows/phonescan.yml"]
   pull_request:
-    paths: ["ios/**", "tools/**", ".github/workflows/phonescan.yml"]
+    paths: ["ios/**", "tools/**", "robot_link/**", "tests/test_robot_link.py", "tests/synthetic_room.py", ".github/workflows/phonescan.yml"]
   workflow_dispatch:
 
 jobs:
@@ -39,5 +39,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install numpy pillow
+      - run: pip install numpy pillow opencv-python-headless scipy
       - run: python3 tools/test_tools.py
+      - name: Robot link (relocalization) tests
+        run: python3 tests/test_robot_link.py
