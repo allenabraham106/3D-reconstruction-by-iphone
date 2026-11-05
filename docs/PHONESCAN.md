@@ -7,11 +7,11 @@ The full illustrated guide is published as an artifact. This file holds the imag
 
 ## Screens (mockups from the SwiftUI layout, not device captures)
 
-| <img src="images/pioneer-home/tutorial.webp" width="180"> | <img src="images/pioneer-home/ready.webp" width="180"> | <img src="images/pioneer-home/recording.webp" width="180"> | <img src="images/pioneer-home/head-back.webp" width="180"> |
+| <img src="images/pioneer-home/home.webp" width="180"> | <img src="images/pioneer-home/mapping.webp" width="180"> | <img src="images/pioneer-home/scans.webp" width="180"> | <img src="images/pioneer-home/on-pioneer.webp" width="180"> |
 |:-:|:-:|:-:|:-:|
-| Tutorial | Ready (iPhone 17) | Recording | Head back to start |
-| <img src="images/pioneer-home/too-fast.webp" width="180"> | <img src="images/pioneer-home/captures.webp" width="180"> | <img src="images/pioneer-home/settings.webp" width="180"> | <img src="images/pioneer-home/home-screen.webp" width="180"> |
-| Too fast | Captures | Settings | Home screen |
+| Home: 3D map, Pioneer localized | Mapping | My Scans | Maps on Pioneer |
+
+<img src="images/pioneer-home/pioneer-model.webp" width="200"> <img src="images/pioneer-home/tutorial.webp" width="180">
 
 ## Real tool output (synthetic 48-frame capture in the app's exact format)
 

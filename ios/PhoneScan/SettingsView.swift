@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SettingsView: View {
     @Binding var showOnboarding: Bool
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var capture: CaptureManager
 
     @AppStorage(CaptureSettings.Key.minTranslationCm) private var minTranslationCm = 5.0
@@ -15,7 +14,6 @@ struct SettingsView: View {
     @AppStorage(CaptureSettings.Key.showFeaturePoints) private var showFeaturePoints = true
     @AppStorage(CaptureSettings.Key.use4K) private var use4K = false
     @AppStorage(CaptureSettings.Key.serverURL) private var serverURL = "http://192.168.1.100:8765"
-    @AppStorage(CaptureSettings.Key.hidePhotoModeCard) private var hidePhotoModeCard = false
 
     @State private var showAdvanced = false
 
@@ -57,11 +55,6 @@ struct SettingsView: View {
                         Toggle(isOn: $showMesh) { Label("Live mesh overlay", systemImage: "square.grid.3x3") }
                     }
                     Toggle(isOn: $showFeaturePoints) { Label("Tracking dots", systemImage: "circle.dotted") }
-                    if !capture.hasLiDAR {
-                        Toggle(isOn: Binding(get: { !hidePhotoModeCard }, set: { hidePhotoModeCard = !$0 })) {
-                            Label("Photo mode card", systemImage: "camera.aperture")
-                        }
-                    }
                 } header: {
                     Text("While scanning")
                 } footer: {
@@ -72,6 +65,7 @@ struct SettingsView: View {
 
                 Section {
                     TextField("http://192.168.1.100:8765", text: $serverURL)
+                        .font(Theme.mono(13))
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -83,8 +77,7 @@ struct SettingsView: View {
 
                 Section {
                     Button {
-                        dismiss()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { showOnboarding = true }
+                        showOnboarding = true
                     } label: {
                         Label("Show scanning tips", systemImage: "questionmark.circle")
                     }
@@ -106,11 +99,8 @@ struct SettingsView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(Theme.navy.ignoresSafeArea())
+            .background(Theme.paper.ignoresSafeArea())
             .navigationTitle("Settings")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
         }
     }
 

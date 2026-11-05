@@ -12,6 +12,7 @@ struct CaptureSettings {
         static let showMesh = "showMesh"
         static let use4K = "use4K"
         static let serverURL = "serverURL"
+        static let robotURL = "robotURL"
         static let showFeaturePoints = "showFeaturePoints"
         static let didOnboard = "didOnboard"
         static let hidePhotoModeCard = "hidePhotoModeCard"
@@ -27,6 +28,7 @@ struct CaptureSettings {
         Key.showMesh: true,
         Key.use4K: false,
         Key.serverURL: "http://192.168.1.100:8765",
+        Key.robotURL: "http://pioneer.local:8770",
         Key.showFeaturePoints: true,
         Key.didOnboard: false,
         Key.hidePhotoModeCard: false,
