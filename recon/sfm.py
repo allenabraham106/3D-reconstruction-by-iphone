@@ -109,6 +109,53 @@ def attach_submodels(main, work: Path, min_shared=5, max_center_err_frac=0.02):
     return attached
 
 
+def _frame_no(name):
+    digits = "".join(ch if ch.isdigit() else " " for ch in Path(name).stem).split()
+    return int(digits[-1]) if digits else None
+
+
+def find_pose_jumps(rec, factor=20.0):
+    """Video frames move a little each step. A camera that 'teleports' between
+    neighbouring frames means the mapper glued a piece on through bad matches (typically
+    frames facing a window or a blank wall). Returns [(frame_before, frame_after)]."""
+    ims = sorted((_frame_no(im.name), im.projection_center(), im.num_points3D)
+                 for im in rec.images.values() if _frame_no(im.name) is not None)
+    if len(ims) < 10:
+        return []
+    idx = np.array([i for i, _, _ in ims])
+    C = np.array([c for _, c, _ in ims])
+    step = np.linalg.norm(np.diff(C, axis=0), axis=1) / np.maximum(np.diff(idx), 1)
+    med = np.median(step)
+    return [(int(idx[k]), int(idx[k + 1])) for k in np.where(step > factor * med)[0]]
+
+
+def weak_frames_near(rec, jumps, radius=8, rel=0.35):
+    """Frames around each jump that saw few 3D points (the weak link)."""
+    pts = {_frame_no(im.name): im.num_points3D for im in rec.images.values()}
+    med = np.median(list(pts.values()))
+    cut = set()
+    for a, b in jumps:
+        near = range(a - radius, b + radius + 1)
+        weak = {i for i in near if pts.get(i, 0) < rel * med}  # unregistered counts as weak
+        cut |= weak or set(range(a - 2, b + 3))
+    return cut
+
+
+def cut_frame_links(db_path, frames):
+    """Drop every match touching the given frames, so the mapper can't use them as glue."""
+    import sqlite3
+    M = 2147483647
+    con = sqlite3.connect(str(db_path))
+    ids = [i for i, n in con.execute("select image_id, name from images") if _frame_no(n) in frames]
+    if ids:
+        q = ",".join(map(str, ids))
+        for tbl in ("two_view_geometries", "matches"):
+            con.execute(f"delete from {tbl} where (pair_id / {M}) in ({q}) or (pair_id % {M}) in ({q})")
+        con.commit()
+    con.close()
+    return len(ids)
+
+
 def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600,
             exhaustive_limit: int = 400, position_priors=None, max_features: int = 8192,
             ba_ratio: float = 1.4):
@@ -178,6 +225,19 @@ def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600
         print(f"[sfm] re-mapping {time.time()-t:.0f}s: {rec.num_reg_images()}/{n_images}")
     if rec is None:
         raise RuntimeError("SfM failed: no reconstruction")
+    jumps = find_pose_jumps(rec)
+    if jumps:
+        cut = weak_frames_near(rec, jumps)
+        print(f"[sfm] camera jumps between frames {jumps}: cutting the weak links "
+              f"({len(cut)} frames: {sorted(cut)}) and re-mapping")
+        cut_frame_links(db, cut)
+        rec4 = _map(db, image_dir, work / "sparse_cut", use_priors, ba_ratio)
+        if rec4 is not None and not find_pose_jumps(rec4) and \
+                rec4.num_reg_images() >= 0.7 * rec.num_reg_images():
+            rec = rec4
+            print(f"[sfm] re-mapped without jumps: {rec.num_reg_images()}/{n_images}")
+        else:
+            print("[sfm] WARNING: re-mapping did not remove the jump; keeping the first model")
     out = work / "sparse_best"
     out.mkdir(exist_ok=True)
     rec.write(out)
