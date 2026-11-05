@@ -63,7 +63,7 @@ struct HomeView: View {
             if let cloud = robot.cloud, !cloud.points.isEmpty {
                 Map3DView(cloud: cloud, path: robot.scanPath,
                           robot: robot.status?.last["robot"], phone: robot.status?.last["phone"],
-                          command: command)
+                          command: command, robotModel: robot.robotModel)
                     .padding(.bottom, 200)
             } else if let grid = robot.status?.grid, let img = robot.topdownImage ?? robot.mapImage {
                 FloorMap(image: img, grid: grid, robot: robot.status?.last["robot"], phone: robot.status?.last["phone"])

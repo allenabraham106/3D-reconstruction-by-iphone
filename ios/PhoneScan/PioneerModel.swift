@@ -3,14 +3,19 @@ import SceneKit
 import UIKit
 import simd
 
-/// The Pioneer humanoid, built from its URDF (WATonomous/pioneer_humanoid,
-/// pioneer_whole_body_humanoid.urdf, Apache-2.0) by tools/urdf_to_app_model.py.
+/// An articulated humanoid built from a URDF by tools/urdf_to_app_model.py.
 ///
-/// Every link keeps its joint, so the legs, arms and fingers can move. `node` is in SceneKit
-/// axes (y up), with the feet at y = 0, facing +x at yaw 0: the same heading convention as the
-/// robot map (yaw CCW from +x), so `node.eulerAngles.y = yaw` points it the right way.
-final class PioneerModel {
+/// The app ships the Pioneer (WATonomous/pioneer_humanoid, pioneer_whole_body_humanoid.urdf,
+/// Apache-2.0); a robot link started with --robot-urdf sends its own robot instead, so any
+/// team's humanoid shows up here. Every link keeps its joint, so the legs, arms and fingers can
+/// move. `node` is in SceneKit axes (y up), feet at y = 0, facing +x at yaw 0: the robot map's
+/// heading convention, so `node.eulerAngles.y = yaw` points it the right way.
+typealias PioneerModel = RobotModel
+
+final class RobotModel {
     let node = SCNNode()
+    let name: String
+    private let gait: Gait
     private var joints: [String: Joint] = [:]
     private var walking = false
 
@@ -23,6 +28,25 @@ final class PioneerModel {
 
     // MARK: Loading
 
+    /// Which joints play which walking role (detected by the converter, or set with --gait).
+    struct Gait: Decodable {
+        var hip_pitch: [String: String]?
+        var knee: [String: String]?
+        var ankle_pitch: [String: String]?
+        var shoulder_pitch: [String: String]?
+        var elbow: [String: String]?
+        var curl: [String]?
+
+        /// Pioneer's joint names, for models converted before roles were stored.
+        static let pioneer = Gait(
+            hip_pitch: ["left": "Hip_F_L", "right": "Hip_F_R"], knee: ["left": "Knee_L", "right": "Knee_R"],
+            ankle_pitch: ["left": "Ankle_P_L", "right": "Ankle_P_R"],
+            shoulder_pitch: ["left": "l_shoulder_pitch", "right": "r_shoulder_pitch"],
+            elbow: ["left": "l_elbow", "right": "r_elbow"],
+            curl: ["mcp", "pip", "dip", "i_mcp", "i_pip", "i_dip", "r_mcp", "r_pip", "r_dip", "l_mcp", "l_pip", "l_dip"]
+                .flatMap { ["r_\($0)", "l_\($0)"] })
+    }
+
     private struct Manifest: Decodable {
         struct Part: Decodable { let color: [Float]; let v: [Int]; let i: [Int] }
         struct JointSpec: Decodable {
@@ -33,28 +57,41 @@ final class PioneerModel {
         struct Link: Decodable { let name: String; let parent: String?; let joint: JointSpec?; let parts: [Part] }
         let links: [Link]
         let index_offset: Int
+        let name: String?
+        let forward: [Float]?
+        let gait: Gait?
+        /// Lowest point of the zero pose in the URDF frame; lifted so every robot stands on the floor.
+        let foot_z: Float?
     }
 
-    /// Loads `Pioneer.robot` from the app bundle. Returns nil if it's missing or unreadable.
-    static func load() -> PioneerModel? {
+    /// The built-in Pioneer (`Pioneer.robot` in the app bundle).
+    static func load() -> RobotModel? {
         guard let url = Bundle.main.url(forResource: "Pioneer", withExtension: "robot"),
-              let data = try? Data(contentsOf: url, options: .mappedIfSafe),
-              data.count > 8, data.prefix(4) == Data("PRBT".utf8)
-        else { return nil }
+              let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        return load(data: data)
+    }
+
+    /// A model sent by a robot link (`GET /robot/model`). Returns nil if the data isn't a robot model.
+    static func load(data: Data) -> RobotModel? {
+        guard data.count > 8, data.prefix(4) == Data("PRBT".utf8) else { return nil }
         let jsonLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self) })
         guard data.count > 8 + jsonLen,
               let manifest = try? JSONDecoder().decode(Manifest.self, from: data.subdata(in: 8..<(8 + jsonLen)))
         else { return nil }
         let buffer = data.subdata(in: (8 + jsonLen)..<data.count)
-        return PioneerModel(manifest: manifest, buffer: buffer)
+        return RobotModel(manifest: manifest, buffer: buffer)
     }
 
     private init(manifest: Manifest, buffer: Data) {
-        // URDF is z-up and Pioneer faces -y. Turn it to face +x, then to SceneKit's y-up.
+        name = manifest.name ?? "Pioneer"
+        gait = manifest.gait ?? .pioneer
+        // URDF is z-up; turn the robot's forward axis to +x, then to SceneKit's y-up.
+        let fwd = manifest.forward ?? [0, -1]   // models without it are the Pioneer, which faces -y
         let toYUp = SCNNode()
         toYUp.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+        toYUp.position = SCNVector3(0, -(manifest.foot_z ?? 0), 0)   // e.g. hip-origin URDFs: feet at z = -0.84
         let facing = SCNNode()
-        facing.eulerAngles = SCNVector3(0, 0, Float.pi / 2)
+        facing.eulerAngles = SCNVector3(0, 0, -atan2(fwd.count > 1 ? fwd[1] : 0, fwd.first ?? 1))
         node.addChildNode(toYUp)
         toYUp.addChildNode(facing)
 
@@ -130,27 +167,29 @@ final class PioneerModel {
         j.node.simdOrientation = simd_quatf(angle: a, axis: j.axis)
     }
 
+    /// An angle on the joint's larger-range side (so "forward" works whatever its axis sign).
+    private func swing(_ name: String, _ amount: Float) {
+        guard let j = joints[name] else { return }
+        set(name, (abs(j.upper) >= abs(j.lower) ? amount : -amount))
+    }
+
     /// A fraction of a joint's range on the side it bends most, e.g. fingers curling closed.
     private func bend(_ name: String, _ fraction: Float) {
         guard let j = joints[name] else { return }
         set(name, (abs(j.upper) >= abs(j.lower) ? j.upper : j.lower) * fraction)
     }
 
-    /// Relaxed standing pose: soft knees, hands loosely curled.
+    private func role(_ r: [String: String]?, _ side: String) -> String? { r?[side] }
+
+    /// Relaxed standing pose: soft knees, elbows a little bent, hands loosely curled.
     func stand() {
-        for side in ["L", "R"] {
-            set("Hip_F_\(side)", 0.08)
-            set("Knee_\(side)", -0.16)
-            set("Ankle_P_\(side)", 0.08)
+        for side in ["left", "right"] {
+            if let hip = role(gait.hip_pitch, side) { set(hip, 0) }
+            if let knee = role(gait.knee, side) { bend(knee, 0.07) }
+            if let ankle = role(gait.ankle_pitch, side) { set(ankle, 0) }
+            if let elbow = role(gait.elbow, side) { bend(elbow, 0.12) }
         }
-        for side in ["r", "l"] {
-            set("\(side)_elbow", -0.25)
-            for f in ["", "i_", "r_", "l_"] {
-                bend("\(side)_\(f)mcp", 0.25)
-                bend("\(side)_\(f)pip", 0.3)
-                bend("\(side)_\(f)dip", 0.25)
-            }
-        }
+        for j in gait.curl ?? [] { bend(j, 0.25) }
     }
 
     /// Plays a walking cycle for `duration` seconds (legs alternate, arms swing opposite).
@@ -161,22 +200,24 @@ final class PioneerModel {
         let action = SCNAction.customAction(duration: duration) { [weak self] _, t in
             guard let self else { return }
             let phase = Float(t / CGFloat(duration)) * steps * .pi
-            for (side, offset) in [("L", Float(0)), ("R", Float.pi)] {
+            for (side, offset) in [("left", Float(0)), ("right", Float.pi)] {
                 let s = sin(phase + offset)
                 let lift = max(0, sin(phase + offset + .pi / 2))
-                self.set("Hip_F_\(side)", 0.08 + 0.32 * s)
-                self.set("Knee_\(side)", -0.16 - 0.75 * lift)
-                self.set("Ankle_P_\(side)", 0.08 + 0.18 * s)
+                // swing sign follows each joint's own limits, so any URDF's axis direction works
+                if let hip = self.role(self.gait.hip_pitch, side) { self.swing(hip, 0.32 * s) }
+                if let knee = self.role(self.gait.knee, side) { self.bend(knee, 0.07 + 0.32 * lift) }
+                if let ankle = self.role(self.gait.ankle_pitch, side) { self.swing(ankle, 0.18 * s) }
+                if let sh = self.role(self.gait.shoulder_pitch, side) { self.swing(sh, -0.28 * s) }
             }
-            self.set("r_shoulder_pitch", 0.28 * sin(phase))
-            self.set("l_shoulder_pitch", 0.28 * sin(phase))
         }
         node.runAction(.sequence([action, .run { [weak self] _ in
             DispatchQueue.main.async {
-                self?.set("r_shoulder_pitch", 0)
-                self?.set("l_shoulder_pitch", 0)
-                self?.stand()
-                self?.walking = false
+                guard let self else { return }
+                for side in ["left", "right"] {
+                    if let sh = self.role(self.gait.shoulder_pitch, side) { self.set(sh, 0) }
+                }
+                self.stand()
+                self.walking = false
             }
         }]))
     }

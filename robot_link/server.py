@@ -17,10 +17,17 @@ The app connects to http://<robot>:8770 and can:
     GET  /map/topdown.png        photo-like top-down view of the scan, aligned with the grid
     GET  /map/cloud.ply          the coloured 3D scan for the app's 3D map (walls cut at 1.4 m, <= 400k points)
     GET  /map/path.json          the scan route: keyframe camera positions, in order
+    GET  /robot/model            this robot's 3D model for the app (from --robot-urdf / --robot-model);
+                                 404 if none, and the app shows its built-in Pioneer
     POST /localize?source=robot  grab a frame from the robot camera and localize it
     POST /localize?source=phone  body = JPEG, headers X-Fx X-Fy X-Cx X-Cy: localize the phone
     POST /upload                 body = zipped Pioneer Home capture, header X-Capture-Name:
                                  runs run.py --arkit, then builds the relocalization map
+
+Any humanoid works: pass --robot-urdf (plus --robot-forward if it doesn't face +x, as REP-103
+robots do) and the app draws that robot, with its name, instead of the Pioneer:
+
+    python -m robot_link.server --maps out --robot-urdf ~/my_robot/urdf/robot.urdf --name "Atlas"
 
 Every pose is in the robot map frame: metres, Z up, floor at Z = 0, the same frame as
 robot/occupancy.yaml. With --ros, robot poses are published as /initialpose
@@ -173,6 +180,40 @@ class RosPublisher:
         self.initial.publish(msg)
 
 
+def _model_info(path: Path) -> dict:
+    """Name, height, joint count and a content id for a .robot file (the app caches by id)."""
+    import hashlib
+    import struct
+    data = path.read_bytes()
+    if data[:4] != b"PRBT":
+        raise SystemExit(f"{path} is not a robot model (convert a URDF with --robot-urdf)")
+    n = struct.unpack("<I", data[4:8])[0]
+    m = json.loads(data[8:8 + n])
+    joints = sum(1 for L in m["links"] if L.get("joint") and L["joint"]["type"] in ("revolute", "continuous"))
+    return {"name": m.get("name"), "height": round(m.get("height", 0), 2), "joints": joints,
+            "id": hashlib.sha1(data).hexdigest()[:12], "bytes": len(data), "source": m.get("source")}
+
+
+def prepare_robot_model(urdf: Path, cache_dir: Path, forward: str = "+x", gait: Path | None = None,
+                        name: str | None = None, triangles: int = 90_000) -> Path:
+    """Convert a URDF once (cached by the URDF's and its meshes' content) to the app's .robot format."""
+    import hashlib
+    sys.path.insert(0, str(ROOT / "tools"))
+    from urdf_to_app_model import convert
+    h = hashlib.sha1()
+    h.update(urdf.read_bytes())
+    for f in sorted(urdf.parent.rglob("*")):
+        if f.is_file() and f.suffix.lower() in (".stl", ".obj", ".dae", ".glb", ".gltf", ".ply"):
+            h.update(f.name.encode())
+            h.update(str(f.stat().st_size).encode())
+    h.update(f"{forward}|{gait}|{name}|{triangles}".encode())
+    out = cache_dir / f"{urdf.stem}-{h.hexdigest()[:10]}.robot"
+    if not out.exists():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        convert(urdf, out, triangles, None, forward, gait, name, source=urdf.name)
+    return out
+
+
 def _read_ply_xyzrgb(path: Path) -> tuple[np.ndarray, np.ndarray]:
     """Binary little-endian PLY with float x y z and uchar r g b (what robot_map.py writes)."""
     data = path.read_bytes()
@@ -220,9 +261,11 @@ def base_from_camera_matrix(spec: str) -> np.ndarray:
 
 class RobotLink:
     def __init__(self, maps: Path, name: str, camera: Camera, publisher: RosPublisher | None,
-                 captures: Path):
+                 captures: Path, robot_model: Path | None = None):
         self.maps_root = maps
         self.name = name
+        self.robot_model = robot_model
+        self.robot_info = _model_info(robot_model) if robot_model else None
         self.camera = camera
         self.publisher = publisher
         self.captures = captures
@@ -250,6 +293,7 @@ class RobotLink:
     def status(self) -> dict:
         info = self.localizer.grid if self.localizer else None
         return {"name": self.name, "map": self.active, "maps": self.available_maps(),
+                "robot": self.robot_info,
                 "camera": self.camera.description, "ros": self.publisher is not None,
                 "grid": info, "last": self.last, "job": self.job}
 
@@ -434,6 +478,10 @@ def make_handler(link: RobotLink):
                     return self._json(200, {"map": link.active, "grid": link.localizer.grid if link.localizer else None})
                 if u.path == "/map/occupancy.png":
                     return self._send(200, link.occupancy_png(parse_qs(u.query).get("style", ["color"])[0]), "image/png")
+                if u.path == "/robot/model":
+                    if not link.robot_model:
+                        return self._json(404, {"ok": False, "reason": "no robot model configured: the app uses its Pioneer"})
+                    return self._send(200, link.robot_model.read_bytes(), "application/octet-stream")
                 if u.path == "/map/cloud.ply":
                     return self._send(200, link.cloud_ply(), "application/octet-stream")
                 if u.path == "/map/path.json":
@@ -493,7 +541,13 @@ def main() -> None:
     ap.add_argument("--captures", type=Path, default=ROOT / "captures", help="where uploads are unzipped")
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--name", default="Pioneer")
+    ap.add_argument("--name", default=None, help="robot name in the app (default: the model's, else Pioneer)")
+    ap.add_argument("--robot-urdf", type=Path, default=None, help="your humanoid's URDF: the app draws it")
+    ap.add_argument("--robot-forward", default="+x", choices=["+x", "-x", "+y", "-y"],
+                    help="URDF axis the robot faces (REP-103: +x; the Pioneer: -y)")
+    ap.add_argument("--robot-gait", type=Path, default=None,
+                    help="JSON naming the hip/knee/ankle/shoulder joints if they aren't auto-detected")
+    ap.add_argument("--robot-model", type=Path, default=None, help="an already converted .robot file")
     ap.add_argument("--camera", default="none",
                     help="none | realsense | ros:/camera/color/image_raw | file:img.jpg")
     ap.add_argument("--camera-K", default=None, help="fx,fy,cx,cy (for --camera file:...)")
@@ -522,9 +576,14 @@ def main() -> None:
         raise SystemExit(f"unknown --camera {a.camera}")
 
     pub = RosPublisher(node, base_from_camera_matrix(a.base_from_camera)) if a.ros else None
-    link = RobotLink(a.maps, a.name, cam, pub, a.captures)
+    model = a.robot_model
+    if a.robot_urdf:
+        model = prepare_robot_model(a.robot_urdf, a.maps / "_robots", a.robot_forward, a.robot_gait, a.name)
+    name = a.name or (_model_info(model)["name"] if model else None) or "Pioneer"
+    link = RobotLink(a.maps, name, cam, pub, a.captures, model)
     httpd = ThreadingHTTPServer((a.host, a.port), make_handler(link))
-    print(f"[robot_link] {a.name} on http://{a.host}:{a.port}  map={link.active}  camera={cam.description}"
+    print(f"[robot_link] {name} on http://{a.host}:{a.port}  map={link.active}  camera={cam.description}"
+          f"  model={'built-in Pioneer' if not model else link.robot_info['name'] + ' (' + str(link.robot_info['joints']) + ' joints)'}"
           f"  ros={'on' if pub else 'off'}")
     try:
         httpd.serve_forever()

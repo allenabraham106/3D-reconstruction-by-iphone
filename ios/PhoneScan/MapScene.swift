@@ -55,6 +55,8 @@ struct Map3DView: UIViewRepresentable {
     var robot: RobotLink.Pose?
     var phone: RobotLink.Pose?
     var command: MapCommand?
+    /// The connected robot's own model (id, .robot bytes); nil draws the built-in Pioneer.
+    var robotModel: (id: String, data: Data)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -80,6 +82,7 @@ struct Map3DView: UIViewRepresentable {
         let c = context.coordinator
         if c.cloudCount != cloud.points.count { c.setCloud(cloud); c.recenter(animated: false) }
         if c.pathCount != path.count { c.setPath(path) }
+        if c.modelID != (robotModel?.id ?? "builtin") { c.setRobot(robotModel) }
         c.place(robot: robot, phone: phone)
         if let command, command != c.lastCommand {
             c.lastCommand = command
@@ -92,8 +95,9 @@ struct Map3DView: UIViewRepresentable {
         let cameraNode = SCNNode()
         let cloudNode = SCNNode()
         let pathNode = SCNNode()
-        let pioneer = PioneerModel.load()
+        var pioneer = RobotModel.load()
         lazy var robotNode: SCNNode = pioneer?.node ?? Coordinator.makePioneer()
+        var modelID = "builtin"
         let phoneNode = Coordinator.makePhone()
         weak var view: SCNView?
         var cloudCount = -1
@@ -193,6 +197,21 @@ struct Map3DView: UIViewRepresentable {
             }
             put(robotNode, robot, height: 0, walk: true)
             put(phoneNode, phone, height: nil)
+        }
+
+        /// Swaps in another team's humanoid (or back to the built-in Pioneer), keeping its place.
+        func setRobot(_ model: (id: String, data: Data)?) {
+            let next = model.flatMap { RobotModel.load(data: $0.data) } ?? RobotModel.load()
+            modelID = model?.id ?? "builtin"
+            guard let next else { return }
+            let old = robotNode
+            next.node.position = old.position
+            next.node.eulerAngles = old.eulerAngles
+            next.node.isHidden = old.isHidden
+            old.removeFromParentNode()
+            pioneer = next
+            robotNode = next.node
+            scene.rootNode.addChildNode(robotNode)
         }
 
         // MARK: Camera moves
