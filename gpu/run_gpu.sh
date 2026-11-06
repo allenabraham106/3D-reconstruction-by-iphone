@@ -24,6 +24,7 @@ pip install -q -r "$ROOT/requirements.txt" OpenEXR imageio imageio-ffmpeg
 
 # ViPE reads MP4: transcode the iPhone .MOV (HEVC, HDR) to SDR H.264 first, same tone-map
 # as recon/frames.py so colours match the CPU pipeline.
+T0=$(date +%s)   # timing starts after installs: they are one-off
 mkdir -p "$WORK/input"
 MP4="$WORK/input/$NAME.mp4"
 if [ ! -f "$MP4" ]; then
@@ -32,10 +33,16 @@ if [ ! -f "$MP4" ]; then
   || ffmpeg -v error -y -i "$VIDEO" -vf "format=yuv420p,scale=-2:720" -c:v libx264 -crf 16 -an "$MP4"
 fi
 
+T1=$(date +%s)
 time vipe infer "$MP4" -o "$WORK/vipe" -p "$PIPELINE"
+T2=$(date +%s)
 
 # 2. ViPE artifacts -> TSDF mesh, gravity-aligned metric robot map, viewer
 python3 "$ROOT/gpu/vipe_to_pipeline.py" "$WORK/vipe" "$NAME" "$WORK/$NAME" --every 2
+T3=$(date +%s)
+# per-stage wall-clock seconds, same keys as run.py's timings.json (bench/benchmark.py reads it)
+echo "{\"frames\": $((T1-T0)), \"vipe\": $((T2-T1)), \"dense\": $((T3-T2)), \"total\": $((T3-T0))}" \
+  > "$WORK/$NAME/timings.json"
 
 # 3. Side-by-side with the CPU pipeline's result, if it exists
 if [ -d "$CPU_OUT/robot" ]; then

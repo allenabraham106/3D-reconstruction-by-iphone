@@ -11,7 +11,7 @@ Outputs in out/<name>/ :
     robot/occupancy.pgm/.yaml                      ROS nav2 2D map
     robot/voxels.npz                               5 cm 3D occupancy
 """
-import argparse, shutil, sys, time
+import argparse, json, shutil, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -40,11 +40,18 @@ def main():
     out = a.out / name
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
+    timings, t_stage = {}, [t0]
+
+    def stage(name):  # wall-clock seconds per stage -> out/<name>/timings.json (bench/)
+        now = time.time()
+        timings[name] = round(now - t_stage[0], 1)
+        t_stage[0] = now
 
     if a.arkit:
         from ingest_arkit import ingest
         ply, cams = ingest(a.input, out / "dense")
         metric = True
+        stage("arkit_ingest")
     else:
         if a.input.is_file():
             from frames import extract
@@ -52,20 +59,24 @@ def main():
             if img_dir.exists():
                 shutil.rmtree(img_dir)
             extract(a.input, img_dir, a.frames, a.max_side)
+            stage("frames")
         else:
             img_dir = a.input
         from sfm import attach_submodels, run_sfm
-        rec = run_sfm(img_dir, out / "sfm")
+        rec = run_sfm(img_dir, out / "sfm", continuous_video=a.input.is_file())
         extra = attach_submodels(rec, out / "sfm")  # bridge pieces SfM couldn't join
+        stage("sfm")
         from mvs import run_mvs
         run_mvs(out / "sfm" / "sparse_best", img_dir, out / "dense", scale=a.stereo_scale,
                 extra_sparse=extra, method=a.stereo, cache_depth=True,
                 dense_every=a.dense_every)
+        stage("dense")  # stereo + TSDF fusion
         ply, cams = out / "dense" / "dense.ply", out / "dense" / "cameras.json"
         metric = False
 
     from robot_map import build
     build(ply, cams, out / "robot", a.phone_height, metric)
+    stage("robot_map")
 
     # viewer bundle: show the metric, gravity-aligned map
     vdir = out / "viewer"
@@ -79,6 +90,9 @@ def main():
         shutil.copy(out / "robot" / "mesh_metric.ply", vdir / "mesh.ply")
     if (out / "robot" / "inferred_floor.ply").exists():  # imagined floor, toggled in viewer
         shutil.copy(out / "robot" / "inferred_floor.ply", vdir / "inferred_floor.ply")
+    stage("viewer")
+    timings["total"] = round(time.time() - t0, 1)
+    (out / "timings.json").write_text(json.dumps(timings, indent=1))
     print(f"\nDone in {time.time()-t0:.0f}s.\n  View:  cd {vdir} && python3 -m http.server 8000"
           f"  ->  http://localhost:8000\n  Robot: {out/'robot'}")
 

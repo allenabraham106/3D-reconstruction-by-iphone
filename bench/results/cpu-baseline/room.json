@@ -1,0 +1,53 @@
+{
+ "scale_source": "phone_height=1.4m",
+ "frames_total": 311,
+ "frames_with_camera": 311,
+ "frames_with_camera_pct": 100.0,
+ "max_jump_x_median_step": null,
+ "camera_height_spread_m": 0.392,
+ "camera_height_median_m": 1.4,
+ "floor_spread_mm": 38.1,
+ "floor_support": 0.078,
+ "depth_pixels_kept_median_pct": 48.6,
+ "mesh_triangles": 1748588,
+ "map_points": 888064,
+ "floor_cells_seen": 2599,
+ "floor_cells_walked_only": 576,
+ "obstacle_cells": 4045,
+ "false_obstacles_cleared_by_walk": 485,
+ "floor_seen_pct": 81.9,
+ "scene_extent_m": [
+  3.51,
+  7.15,
+  1.88
+ ],
+ "glass_walls": 0,
+ "warnings": [],
+ "timings_s": {
+  "sfm": 121.4,
+  "dense": 1282.1,
+  "robot_map": 8.3,
+  "viewer": 0.0,
+  "total": 1411.8
+ },
+ "accuracy": {
+  "matched": 311,
+  "reference_images": 311,
+  "position_error_median_pct": 0.0884,
+  "position_error_max_pct": 0.1952,
+  "rotation_error_median_deg": 0.184,
+  "rotation_error_max_deg": 0.454
+ },
+ "scan": "room",
+ "description": "Mip-NeRF 360 room, 311 photos, reference poses",
+ "pipeline": "cpu",
+ "machine": {
+  "python": "3.13.18",
+  "os": "Linux-6.18.44-fc-v242-x86_64-with-glibc2.39",
+  "cpus": 4,
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "ram_gb": 16.5
+ },
+ "date": "2026-11-06 20:03",
+ "wall_clock_s": 1412.2
+}

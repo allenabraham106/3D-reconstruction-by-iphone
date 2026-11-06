@@ -1,0 +1,46 @@
+{
+ "scale_source": "phone_height=1.4m",
+ "frames_total": 277,
+ "frames_with_camera": 277,
+ "frames_with_camera_pct": 100.0,
+ "max_jump_x_median_step": 4.2,
+ "camera_height_spread_m": 0.188,
+ "camera_height_median_m": 1.4,
+ "floor_spread_mm": 46.1,
+ "floor_support": 0.052,
+ "depth_pixels_kept_median_pct": 35.6,
+ "mesh_triangles": 2018386,
+ "map_points": 970989,
+ "floor_cells_seen": 2518,
+ "floor_cells_walked_only": 608,
+ "obstacle_cells": 7098,
+ "false_obstacles_cleared_by_walk": 451,
+ "floor_seen_pct": 80.6,
+ "scene_extent_m": [
+  6.86,
+  7.01,
+  2.28
+ ],
+ "glass_walls": 0,
+ "warnings": [],
+ "timings_s": {
+  "frames": 39.8,
+  "sfm": 882.6,
+  "dense": 1192.8,
+  "robot_map": 10.2,
+  "viewer": 0.0,
+  "total": 2125.4
+ },
+ "scan": "IMG_6075",
+ "description": "robotics lab / office, 85 s",
+ "pipeline": "cpu",
+ "machine": {
+  "python": "3.13.18",
+  "os": "Linux-6.18.44-fc-v242-x86_64-with-glibc2.39",
+  "cpus": 4,
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "ram_gb": 16.5
+ },
+ "date": "2026-11-06 20:03",
+ "wall_clock_s": 2125.8
+}

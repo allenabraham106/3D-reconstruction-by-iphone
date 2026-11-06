@@ -168,6 +168,15 @@ The kitchen capture circles a table and almost never sees the floor, so the map 
 
 Reproduce: `python tests/eval_poses.py out/<name>/sfm/sparse_best <reference sparse dir>`; ARKit round-trip test: `tests/make_synthetic_arkit.py`.
 
+## Benchmark (`bench/`)
+
+A fixed suite (the room scene with reference poses, plus the office and three apartment videos), scored the same way for any pipeline, so CPU and GPU runs can be compared side by side. Results and what each number means: [bench/README.md](bench/README.md); the CPU baseline is in [bench/results/cpu-baseline](bench/results/cpu-baseline/README.md).
+
+```bash
+python bench/benchmark.py run --label gpu-vipe --pipeline gpu --data ~/bench_data
+python bench/benchmark.py compare cpu-baseline gpu-vipe
+```
+
 ## Robot: ROS 2 / nav2 (`ros2/pioneer_map`)
 
 ```bash

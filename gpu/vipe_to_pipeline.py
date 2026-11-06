@@ -114,6 +114,12 @@ def main():
     cams = [{"name": v.name, "R": v.R.tolist(), "t": v.t.tolist(), "C": v.C.tolist(),
              "fx": float(v.K[0, 0]), "fy": float(v.K[1, 1]), "w": v.w, "h": v.h} for v in views]
     (dense / "cameras.json").write_text(json.dumps(cams))
+    # for bench/benchmark.py: frames tried (every k-th video frame) and kept depth, so the
+    # numbers line up with the CPU pipeline's frames/ folder and depth cache
+    n_video = int(cv2.VideoCapture(str(a.vipe_dir / "rgb" / f"{a.name}.mp4")).get(cv2.CAP_PROP_FRAME_COUNT))
+    (dense / "bench_info.json").write_text(json.dumps({
+        "frames_total": -(-n_video // a.every) if n_video > 0 else None,
+        "depth_pixels_kept_median_pct": round(float(np.median([m.mean() for m in masks])) * 100, 1)}))
     meta = build(dense / "dense.ply", dense / "cameras.json", a.out / "robot", metric_scale=True)
     vdir = a.out / "viewer"
     if vdir.exists():

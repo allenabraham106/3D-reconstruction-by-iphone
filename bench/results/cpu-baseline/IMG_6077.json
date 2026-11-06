@@ -1,0 +1,48 @@
+{
+ "scale_source": "phone_height=1.4m",
+ "frames_total": 274,
+ "frames_with_camera": 256,
+ "frames_with_camera_pct": 93.4,
+ "max_jump_x_median_step": 8.4,
+ "camera_height_spread_m": 1.222,
+ "camera_height_median_m": 1.4,
+ "floor_spread_mm": 39.9,
+ "floor_support": 0.097,
+ "depth_pixels_kept_median_pct": 19.5,
+ "mesh_triangles": 1702178,
+ "map_points": 785132,
+ "floor_cells_seen": 760,
+ "floor_cells_walked_only": 2503,
+ "obstacle_cells": 5860,
+ "false_obstacles_cleared_by_walk": 2241,
+ "floor_seen_pct": 23.3,
+ "scene_extent_m": [
+  5.74,
+  7.47,
+  3.07
+ ],
+ "glass_walls": 0,
+ "warnings": [
+  "camera heights spread over 1.22 m (p5-p95): the map is probably bent or tilted (camera-path drift), so walls and floor may not line up. Re-run, or capture with the app (ARKit) for drift-free poses."
+ ],
+ "timings_s": {
+  "frames": 39.8,
+  "sfm": 468.4,
+  "dense": 1346.7,
+  "robot_map": 9.7,
+  "viewer": 0.0,
+  "total": 1864.6
+ },
+ "scan": "IMG_6077",
+ "description": "apartment, latest walk, 115 s",
+ "pipeline": "cpu",
+ "machine": {
+  "python": "3.13.18",
+  "os": "Linux-6.18.44-fc-v242-x86_64-with-glibc2.39",
+  "cpus": 4,
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "ram_gb": 16.5
+ },
+ "date": "2026-11-06 20:03",
+ "wall_clock_s": 1865.5
+}
