@@ -9,9 +9,11 @@ import numpy as np
 import pycolmap
 
 
-def _map(db, image_dir, out, use_priors=False, ba_ratio=1.4):
+def _map(db, image_dir, out, use_priors=False, ba_ratio=1.4, seed=None):
     out.mkdir(parents=True, exist_ok=True)
     opts = pycolmap.IncrementalPipelineOptions()
+    if seed is not None:  # the mapper is randomised: another seed gives another solve
+        opts.random_seed = seed
     # Global bundle adjustment runs whenever the model grows by this factor.
     opts.ba_global_frames_ratio = ba_ratio
     opts.ba_global_points_ratio = ba_ratio
@@ -114,7 +116,7 @@ def _frame_no(name):
     return int(digits[-1]) if digits else None
 
 
-def find_pose_jumps(rec, factor=20.0):
+def find_pose_jumps(rec, factor=12.0):
     """Video frames move a little each step. A camera that 'teleports' between
     neighbouring frames means the mapper glued a piece on through bad matches (typically
     frames facing a window or a blank wall). Returns [(frame_before, frame_after)]."""
@@ -190,6 +192,8 @@ def fix_pose_jumps(rec, db, image_dir, work, use_priors=False, ba_ratio=1.4, n_i
         print(f"[sfm] camera jump between frames {worst} (of {len(jumps)}): cutting the weak "
               f"links ({len(cut)} frames: {min(cut)}-{max(cut)}) and re-mapping")
         cut_frame_links(db, cut)
+        import shutil
+        shutil.rmtree(work / f"sparse_cut{attempt}", ignore_errors=True)  # from an earlier pass
         rec4 = _map(db, image_dir, work / f"sparse_cut{attempt}", use_priors, ba_ratio)
         if rec4 is None or rec4.num_reg_images() < 0.7 * rec.num_reg_images():
             print("[sfm] WARNING: re-mapping lost too many frames; keeping the previous model")
@@ -203,6 +207,7 @@ def fix_pose_jumps(rec, db, image_dir, work, use_priors=False, ba_ratio=1.4, n_i
         # pieces from the earlier solves were glued by the bad links: don't attach them
         for d in work.glob("sparse*"):
             if d.is_dir() and d.name not in (f"sparse_cut{attempt}", "sparse_best"):
+                shutil.rmtree(work / f"rejected_{d.name}", ignore_errors=True)
                 d.rename(work / f"rejected_{d.name}")
     else:
         if find_pose_jumps(rec):
@@ -212,8 +217,10 @@ def fix_pose_jumps(rec, db, image_dir, work, use_priors=False, ba_ratio=1.4, n_i
 
 def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600,
             exhaustive_limit: int = 400, position_priors=None, max_features: int = 8192,
-            ba_ratio: float = 1.4):
-    """position_priors: optional {image name: [x, y, z]} in metres (ARKit). When given,
+            ba_ratio: float = 1.4, continuous_video: bool = False):
+    """continuous_video: frames come from one video (run.py sets it), so camera jumps
+    between neighbouring frames are tears to repair (see fix_pose_jumps).
+    position_priors: optional {image name: [x, y, z]} in metres (ARKit). When given,
     frames that were physically close are matched too (catches revisits cheaply) and the
     mapper keeps the reconstruction consistent with those positions."""
     work.mkdir(parents=True, exist_ok=True)
@@ -279,7 +286,31 @@ def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600
         print(f"[sfm] re-mapping {time.time()-t:.0f}s: {rec.num_reg_images()}/{n_images}")
     if rec is None:
         raise RuntimeError("SfM failed: no reconstruction")
-    rec = fix_pose_jumps(rec, db, image_dir, work, use_priors, ba_ratio, n_images)
+    if continuous_video and find_pose_jumps(rec):
+        # Only for video: frames a fraction of a second apart can't really jump 12+ median
+        # steps. A photo set can (the Mip-NeRF room has a genuine 46x step between passes).
+        import shutil
+        uncut = work / "database_uncut.db"
+        shutil.copy(db, uncut)
+        rec = fix_pose_jumps(rec, db, image_dir, work, use_priors, ba_ratio, n_images)
+        # The mapper is random: the same video can tear on one run and not the next. If
+        # cutting didn't help, solve again from the uncut matches with other seeds.
+        best = rec
+        for seed in (1, 2):
+            if not find_pose_jumps(best):
+                break
+            print(f"[sfm] jumps remain: re-solving with seed {seed}")
+            shutil.copy(uncut, db)
+            rs = _map(db, image_dir, work / f"sparse_seed{seed}", use_priors, ba_ratio, seed=seed)
+            if rs is None:
+                continue
+            rs = fix_pose_jumps(rs, db, image_dir, work, use_priors, ba_ratio, n_images)
+            ok = rs.num_reg_images() >= 0.7 * best.num_reg_images()
+            if ok and (not find_pose_jumps(rs) or max_step_ratio(rs) < max_step_ratio(best)):
+                best = rs
+        rec = best
+        if find_pose_jumps(rec):
+            print("[sfm] WARNING: camera jumps remain after retries; the map may be torn")
     out = work / "sparse_best"
     out.mkdir(exist_ok=True)
     rec.write(out)

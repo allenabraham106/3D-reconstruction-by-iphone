@@ -418,6 +418,14 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     if metric and cam_h < 0.9:
         warnings.append(f"the phone was only {cam_h:.2f} m above the detected floor: that 'floor' is "
                         "probably a table or bed, not the ground.")
+    # A hand-held phone stays at about the same height. If the camera heights spread much
+    # more, the reconstruction is bent or tilted (monocular drift), whatever the floor fit
+    # says. Clean walk-throughs: 0.05-0.4 m; bent ones measured 0.5-2.1 m.
+    h_spread = float(np.percentile(Cw[:, 2], 95) - np.percentile(Cw[:, 2], 5))
+    if h_spread > 0.5:
+        warnings.append(f"camera heights spread over {h_spread:.2f} m (p5-p95): the map is probably "
+                        "bent or tilted (camera-path drift), so walls and floor may not line up. "
+                        "Re-run, or capture with the app (ARKit) for drift-free poses.")
     for w in warnings:
         print("[robot_map] WARNING:", w)
     meta = {"scale_applied": float(scale), "metric_source": "arkit" if metric else "input (metric depth)" if metric_scale else
@@ -434,7 +442,8 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
                              "behind_ratio": round(r, 2)} for p0, p1, r in glass],
             "points": int(len(Pw)), "voxels_5cm": int(len(vi)),
             "scene_extent_m": (Pw.max(0) - Pw.min(0)).round(2).tolist(),
-            "camera_height_median_m": float(np.median(Cw[:, 2])), "warnings": warnings}
+            "camera_height_median_m": float(np.median(Cw[:, 2])),
+            "camera_height_spread_m": round(h_spread, 3), "warnings": warnings}
     (out / "map_meta.json").write_text(json.dumps(meta, indent=2))
     print("[robot_map]", json.dumps(meta))
     return meta
