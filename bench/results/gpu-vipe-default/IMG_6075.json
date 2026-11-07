@@ -1,0 +1,45 @@
+{
+ "scale_source": "input (metric depth)",
+ "frames_total": 426,
+ "frames_with_camera": 426,
+ "frames_with_camera_pct": 100.0,
+ "max_jump_x_median_step": 2.6,
+ "camera_height_spread_m": 0.205,
+ "camera_height_median_m": 1.737,
+ "floor_spread_mm": 53.1,
+ "floor_support": 0.047,
+ "depth_pixels_kept_median_pct": 97.5,
+ "mesh_triangles": 2677556,
+ "map_points": 1203524,
+ "floor_cells_seen": 2867,
+ "floor_cells_walked_only": 2145,
+ "obstacle_cells": 12374,
+ "false_obstacles_cleared_by_walk": 1031,
+ "floor_seen_pct": 57.2,
+ "scene_extent_m": [
+  9.6,
+  8.57,
+  3.32
+ ],
+ "glass_walls": 0,
+ "warnings": [],
+ "timings_s": {
+  "frames": 0,
+  "vipe": 357,
+  "dense": 35,
+  "total": 392
+ },
+ "scan": "IMG_6075",
+ "description": "robotics lab / office, 85 s",
+ "pipeline": "gpu (ViPE default)",
+ "wall_clock_s": 392.0,
+ "machine": {
+  "python": "3.11.18",
+  "os": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "cpus": 16,
+  "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+  "ram_gb": 65.7,
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, 16303 MiB"
+ },
+ "date": "2026-11-07 00:28"
+}

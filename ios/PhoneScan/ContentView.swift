@@ -58,19 +58,26 @@ struct CaptureView: View {
             if !capture.isRecording {
                 RoundButton(symbol: "xmark", label: "Close") { dismiss() }
             }
-            HStack(spacing: 6) {
-                Circle().fill(capture.trackingOK ? Theme.good : Theme.warning).frame(width: 7, height: 7)
-                Text(capture.trackingText).lineLimit(1)
+            Spacer(minLength: 0)
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(capture.isRecording ? Theme.recording : (capture.trackingOK ? Theme.good : Theme.warning))
+                    .frame(width: 8, height: 8)
+                Text(capture.isRecording ? timeString(capture.elapsedSeconds) : capture.trackingText)
+                    .font(.system(size: 15, weight: .semibold)).monospacedDigit().lineLimit(1)
+                    .contentTransition(.numericText())
             }
-            .monoLabel(10, color: Theme.card)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            .background(Theme.chip.opacity(0.92), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color.black.opacity(0.45), in: Capsule())
             Spacer(minLength: 0)
             if capture.isRecording {
                 MiniMap(path: capture.path, current: capture.current, heading: capture.heading)
-                    .frame(width: 104, height: 104)
+                    .frame(width: 96, height: 96)
                     .transition(.opacity)
+            } else {
+                Color.clear.frame(width: 42, height: 42)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: capture.isRecording)
@@ -80,68 +87,62 @@ struct CaptureView: View {
 
     private var sheet: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Capsule().fill(Theme.line).frame(width: 36, height: 4).frame(maxWidth: .infinity).padding(.bottom, 14)
-            HStack(spacing: 6) {
-                if capture.isRecording {
-                    Chip(text: capture.isPaused ? "Paused" : "Mapping", symbol: capture.isPaused ? "pause.fill" : "map",
-                         style: .solid(capture.isPaused ? Theme.ink2 : Theme.accent))
-                    if capture.guidance.isWarning { Chip(text: "Slow down", style: .solid(Theme.warning)) }
-                } else if capture.trackingOK {
-                    Chip(text: "Ready", symbol: "checkmark", style: .solid(Theme.chipGreen))
-                } else {
-                    Chip(text: "Starting", symbol: "hourglass")
-                }
-                Spacer(minLength: 0)
-                Chip(text: capture.hasLiDAR ? "LiDAR" : "Photo mode", symbol: capture.hasLiDAR ? "dot.radiowaves.left.and.right" : "camera")
+            HStack(alignment: .firstTextBaseline) {
+                Text(headline).font(Theme.display(22)).foregroundStyle(Theme.ink)
+                Spacer(minLength: 8)
+                Chip(text: capture.hasLiDAR ? "LiDAR" : "Photo mode",
+                     symbol: capture.hasLiDAR ? "dot.radiowaves.left.and.right" : "camera")
             }
-            Text(headline).font(Theme.display(22)).foregroundStyle(Theme.ink).padding(.top, 10)
             Text(subline)
                 .font(.subheadline)
                 .foregroundStyle(capture.isRecording && capture.guidance.isWarning ? Theme.warning : Theme.ink2)
-                .padding(.top, 2)
+                .padding(.top, 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .animation(.easeInOut(duration: 0.2), value: capture.guidance)
-            if capture.isRecording { recordingStats.padding(.top, 14) }
+            if capture.isRecording { recordingStats.padding(.top, 18) }
             if let message = capture.message, !capture.isRecording {
                 HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle").foregroundStyle(Theme.chipGreen)
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.good)
                     Text(message).font(.footnote).foregroundStyle(Theme.ink)
                     Spacer(minLength: 0)
                     Button { capture.message = nil } label: { Image(systemName: "xmark").font(.caption2.weight(.bold)) }
                         .foregroundStyle(Theme.ink2)
                 }
-                .padding(10)
-                .paperCard(10, fill: Theme.paper)
-                .padding(.top, 12)
+                .padding(12)
+                .background(Theme.soft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.top, 14)
             }
-            HStack(spacing: 10) {
-                if capture.isRecording {
-                    Tile(title: capture.isPaused ? "Resume" : "Pause", symbol: capture.isPaused ? "play" : "pause") {
-                        capture.isPaused.toggle()
-                    }
-                    Tile(title: "Stop", symbol: "stop", busy: capture.isFinishing) {
-                        capture.stopRecording { _ in library.refresh() }
-                    }
-                } else {
-                    Tile(title: capture.isFinishing ? "Saving…" : "Start mapping", symbol: "record.circle",
-                         prominent: true, busy: capture.isFinishing) {
-                        capture.startRecording()
-                    }
-                    .disabled(capture.isFinishing)
-                }
-            }
-            .padding(.top, 16)
+            controls.padding(.top, 22)
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 24)
+        .padding(.top, 22)
+        .padding(.bottom, 8)
         .background(
-            UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22, style: .continuous)
+            UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28, style: .continuous)
                 .fill(Theme.card)
-                .shadow(color: .black.opacity(0.08), radius: 12, y: -2)
+                .shadow(color: .black.opacity(0.10), radius: 16, y: -2)
                 .ignoresSafeArea(edges: .bottom)
         )
         .animation(.easeInOut(duration: 0.25), value: capture.isRecording)
+    }
+
+    /// Pause on the left, the record / stop button in the middle, the live-mesh toggle on the right.
+    private var controls: some View {
+        HStack {
+            CircleButton(symbol: capture.isPaused ? "play.fill" : "pause.fill",
+                         label: capture.isPaused ? "Resume" : "Pause") { capture.isPaused.toggle() }
+                .opacity(capture.isRecording ? 1 : 0)
+                .disabled(!capture.isRecording)
+            Spacer()
+            RecordButton(isRecording: capture.isRecording, isFinishing: capture.isFinishing,
+                         ready: capture.trackingOK) { toggleRecording() }
+            Spacer()
+            CircleButton(symbol: showMesh ? "square.grid.3x3.fill" : "square.grid.3x3",
+                         label: showMesh ? "Hide live mesh" : "Show live mesh") { showMesh.toggle() }
+                .opacity(capture.supportsMesh ? 1 : 0)
+                .disabled(!capture.supportsMesh)
+        }
+        .padding(.horizontal, 20)
     }
 
     private var headline: String {
@@ -159,33 +160,22 @@ struct CaptureView: View {
     }
 
     private var recordingStats: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline, spacing: 0) {
-                stat(timeString(capture.elapsedSeconds), "time")
+                StatView(value: "\(capture.frameCount)", label: "Frames")
                 Spacer()
-                stat("\(capture.frameCount)", "frames")
+                StatView(value: String(format: "%.1f", capture.distanceMeters), unit: "m", label: "Walked")
                 Spacer()
-                stat(String(format: "%.1f m", capture.distanceMeters), "walked")
+                StatView(value: capture.detail > 0.5 ? "High" : capture.detail > 0.15 ? "OK" : "Low", label: "Detail")
             }
             HStack(spacing: 16) {
                 Meter(title: "Pace", value: capture.pace == .good ? 0.35 : 1,
                       caption: capture.pace == .good ? "Good" : "Too fast",
-                      tint: capture.pace == .good ? Theme.chipGreen : Theme.warning)
+                      tint: capture.pace == .good ? Theme.good : Theme.warning)
                 Meter(title: "Detail", value: Double(capture.detail),
                       caption: capture.detail > 0.5 ? "High" : capture.detail > 0.15 ? "OK" : "Low",
-                      tint: capture.detail > 0.15 ? Theme.chipGreen : Theme.warning)
+                      tint: capture.detail > 0.15 ? Theme.accent : Theme.warning)
             }
-        }
-    }
-
-    private func stat(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(.system(size: 20, weight: .regular, design: .monospaced))
-                .foregroundStyle(Theme.ink)
-                .contentTransition(.numericText())
-                .animation(.snappy, value: value)
-            Text(label).monoLabel(9, color: Theme.ink2)
         }
     }
 
@@ -202,6 +192,24 @@ struct CaptureView: View {
 
 // MARK: - Pieces
 
+/// Quiet round button beside the record button (pause, live mesh).
+struct CircleButton: View {
+    let symbol: String
+    let label: String
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(Theme.ink)
+                .frame(width: 54, height: 54)
+                .background(Theme.soft, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
 struct RecordButton: View {
     let isRecording: Bool
     let isFinishing: Bool
@@ -211,16 +219,16 @@ struct RecordButton: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                Circle().stroke(Theme.ink, lineWidth: 2).frame(width: 70, height: 70)
+                Circle().stroke(Theme.ink, lineWidth: 4).frame(width: 74, height: 74)
                 if isFinishing {
                     ProgressView().tint(Theme.ink)
                 } else {
-                    RoundedRectangle(cornerRadius: isRecording ? 6 : 28, style: .continuous)
+                    RoundedRectangle(cornerRadius: isRecording ? 8 : 29, style: .continuous)
                         .fill(Theme.recording)
-                        .frame(width: isRecording ? 26 : 56, height: isRecording ? 26 : 56)
+                        .frame(width: isRecording ? 30 : 58, height: isRecording ? 30 : 58)
                 }
             }
-            .frame(width: 78, height: 78)
+            .frame(width: 82, height: 82)
             .animation(.spring(duration: 0.3), value: isRecording)
         }
         .buttonStyle(.plain)
@@ -264,11 +272,11 @@ struct Meter: View {
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Rectangle().fill(Theme.line)
-                    Rectangle().fill(tint).frame(width: max(3, geo.size.width * min(1, max(0, value))))
+                    Capsule().fill(Theme.soft)
+                    Capsule().fill(tint).frame(width: max(6, geo.size.width * min(1, max(0, value))))
                 }
             }
-            .frame(height: 3)
+            .frame(height: 6)
             .animation(.easeOut(duration: 0.3), value: value)
         }
         .frame(maxWidth: .infinity)
@@ -310,7 +318,7 @@ struct MiniMap: View {
                 line.move(to: pt(path[0]))
                 for p in path.dropFirst() { line.addLine(to: pt(p)) }
                 line.addLine(to: pt(current))
-                ctx.stroke(line, with: .color(Theme.ink), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                ctx.stroke(line, with: .color(Theme.accent), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
             if let start = path.first {
                 let c = pt(start)
@@ -325,8 +333,8 @@ struct MiniMap: View {
             ctx.fill(wedge, with: .color(Theme.accent.opacity(0.22)))
             ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4.5, y: c.y - 4.5, width: 9, height: 9)), with: .color(Theme.accent))
         }
-        .paperCard(12)
-        .overlay(alignment: .bottomTrailing) { Text("1 m").monoLabel(8, color: Theme.ink2).padding(6) }
+        .paperCard(16)
+        .overlay(alignment: .bottomTrailing) { Text("1 m").monoLabel(8, color: Theme.ink2).padding(7) }
         .accessibilityLabel("Map of your path")
     }
 }

@@ -17,9 +17,12 @@ import pycolmap
 
 # ---------------------------------------------------------------- camera helpers
 class View:
-    def __init__(self, image, camera, image_dir, scale=1.0):
+    def __init__(self, image, camera, image_dir, scale=1.0, rec=None, tag=0):
+        # tag = which reconstruction this view came from (main model = 0, attached
+        # sub-models 1, 2, ...); ids are namespaced by it so models never collide.
         self.name = image.name
-        self.id = image.image_id
+        self.id = (tag, image.image_id)
+        self.rec = rec
         T = image.cam_from_world().matrix()  # 3x4
         self.R = T[:, :3].copy()
         self.t = T[:, 3].copy()
@@ -43,7 +46,7 @@ class View:
         self.h, self.w = img.shape[:2]
         pts = [image.points2D[i].point3D_id for i in range(len(image.points2D))
                if image.points2D[i].has_point3D()]
-        self.point_ids = set(pts)
+        self.point_ids = {(tag, p) for p in pts}
         self.depth = None
         self.conf_mask = None
 
@@ -52,10 +55,11 @@ class View:
         return self.R[2]  # viewing direction in world
 
 
-def sparse_depths(view, rec):
+def sparse_depths(view, rec=None):
     if not view.point_ids:
         return np.array([1.0])
-    X = np.array([rec.points3D[i].xyz for i in view.point_ids])
+    rec = view.rec if view.rec is not None else rec
+    X = np.array([rec.points3D[i].xyz for _, i in view.point_ids])
     z = (X @ view.R.T + view.t)[:, 2]
     return z[z > 0]
 
@@ -157,6 +161,219 @@ def stereo_depth(ref, src, rec):
     return D
 
 
+# ---------------------------------------------------------------- plane-sweep stereo
+def _box(x, r):
+    return cv2.boxFilter(x, -1, (2 * r + 1, 2 * r + 1), normalize=True,
+                         borderType=cv2.BORDER_REFLECT)
+
+
+def _prep_gray(clahe):
+    """Optional local-contrast boost so detail in dark regions survives the texture test."""
+    if not clahe:
+        return lambda g: g
+    op = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    return lambda g: op.apply(g)
+
+
+def planesweep_multiscale(ref, srcs, rec=None, scales=(0.5, 0.25), **kw):
+    """Fine-to-coarse: keep fine depth where it exists, fill its holes from coarser sweeps.
+
+    At low resolution the same window spans more of a weakly textured surface (floors,
+    walls), so matches succeed where the fine pass found nothing."""
+    D = None
+    for i, sc in enumerate(scales):
+        kw_i = dict(kw)
+        if i > 0:
+            kw_i.pop("wall_normals", None)  # wall planes on the finest pass only (time)
+        Ds = planesweep_depth(ref, srcs, rec, scale=sc, **kw_i)
+        D = Ds if D is None else np.where(D > 0, D, Ds)
+    return D
+
+
+def _sweep_family(I, muI, sdI, src_data, Kr_inv, n_c, params, to_dist, win, min_std, h, w):
+    """Sweep one family of parallel planes n_c . X = dist (ref-camera coords).
+
+    params are sampled uniformly (inverse depth for fronto-parallel, height for ground
+    planes); to_dist maps a param to the plane offset. Returns the cost volume."""
+    ones = np.ones((h, w), np.float32)
+    costs = np.empty((len(params), h, w), np.float32)
+    for k, p_ in enumerate(params):
+        dist = to_dist(p_)
+        per_src = []
+        for J, Ks, R, t in src_data:
+            H = Ks @ (R + np.outer(t, n_c) / dist) @ Kr_inv  # ref pixel -> src pixel
+            Jw = cv2.warpPerspective(J, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            valid = cv2.warpPerspective(ones, H, (w, h), flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
+                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            muJ = _box(Jw, win)
+            sdJ = np.sqrt(np.maximum(_box(Jw * Jw, win) - muJ * muJ, 0))
+            ncc = (_box(I * Jw, win) - muI * muJ) / (sdI * sdJ + 1e-3)
+            c = 1.0 - ncc
+            c[(valid < 0.5) | (sdJ < min_std)] = 2.0
+            per_src.append(c)
+        P = np.sort(np.stack(per_src), axis=0)
+        costs[k] = P[:2].mean(0) if len(per_src) >= 2 else P[0]
+    return costs
+
+
+def _pick(costs, params, excl, margin, min_ncc):
+    """Winner per pixel + parabola refinement + uniqueness. Returns (best, param, ok)."""
+    n = len(params)
+    best_i = costs.argmin(0)
+    h, w = best_i.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    best = costs[best_i, yy, xx]
+    k0 = np.clip(best_i, 1, n - 2)
+    cm, c0, cp = costs[k0 - 1, yy, xx], costs[k0, yy, xx], costs[k0 + 1, yy, xx]
+    denom = cm - 2 * c0 + cp
+    with np.errstate(divide="ignore", invalid="ignore"):
+        off = np.where(np.abs(denom) > 1e-6, 0.5 * (cm - cp) / denom, 0.0)
+    off = np.nan_to_num(np.clip(off, -0.5, 0.5))
+    param = params[k0] + off * (params[1] - params[0])
+    far = costs.copy()
+    for d in range(-excl, excl + 1):  # a broad, correct minimum is not ambiguity
+        far[np.clip(best_i + d, 0, n - 1), yy, xx] = np.inf
+    second = far.min(0)
+    ok = (best < 1.0 - min_ncc) & (best_i > 0) & (best_i < n - 1) & ((second - best) > margin)
+    return best, param, ok
+
+
+def planesweep_depth(ref, srcs, rec=None, scale=0.5, n_planes=96, win=3, min_ncc=0.5,
+                     min_std=2.0, margin=0.02, excl=4, edge_tol=0.05, clahe=False,
+                     up_world=None, n_ground=64, wall_normals=None, n_wall=48, stats=None):
+    """Depth for `ref` by sweeping planes through `srcs` (works for any camera motion).
+
+    Two plane families: fronto-parallel (facing the camera; walls, objects) and, if
+    up_world is given, ground-parallel (horizontal; floors, table tops). A floor seen
+    at a grazing angle never fits a fronto-parallel window, so without the second
+    family floors come out empty (Gallup et al. 2007). Matching cost is ZNCC over a
+    (2*win+1)^2 window, invariant to the exposure changes phones make between frames;
+    the best two of the sources' costs are averaged (robust to one being occluded).
+    """
+    z = sparse_depths(ref, rec)
+    zmin, zmax = np.percentile(z, 2) * 0.7, np.percentile(z, 98) * 1.4
+    h, w = int(ref.h * scale), int(ref.w * scale)
+    S = np.diag([scale, scale, 1.0])
+    Kr = S @ ref.K
+    Kr_inv = np.linalg.inv(Kr)
+    prep = _prep_gray(clahe)
+    I = prep(cv2.resize(cv2.cvtColor(ref.img, cv2.COLOR_BGR2GRAY), (w, h),
+                        interpolation=cv2.INTER_AREA)).astype(np.float32)
+    muI = _box(I, win)
+    sdI = np.sqrt(np.maximum(_box(I * I, win) - muI * muI, 0))
+    textured = sdI > min_std
+    src_data = []
+    for s_ in srcs:
+        J = prep(cv2.resize(cv2.cvtColor(s_.img, cv2.COLOR_BGR2GRAY), (w, h),
+                            interpolation=cv2.INTER_AREA)).astype(np.float32)
+        R = s_.R @ ref.R.T
+        src_data.append((J, S @ s_.K, R, s_.t - R @ ref.t))
+    # pixel rays (z = 1) in ref camera coords
+    yy, xx = np.mgrid[0:h, 0:w]
+    rays = np.stack([xx, yy, np.ones_like(xx)], -1).astype(np.float64) @ Kr_inv.T
+
+    # family 1: fronto-parallel, uniform in inverse depth; plane z = 1/p
+    fp = np.linspace(1.0 / zmin, 1.0 / zmax, n_planes)
+    c1 = _sweep_family(I, muI, sdI, src_data, Kr_inv, np.array([0.0, 0.0, 1.0]), fp,
+                       lambda p_: 1.0 / p_, win, min_std, h, w)
+    best, p1, ok = _pick(c1, fp, excl, margin, min_ncc)
+    depth = np.where(ok, 1.0 / np.maximum(p1, 1e-9), 0.0)
+    fam = np.zeros((h, w), np.uint8)
+
+    # family 2: ground-parallel planes (heights along gravity), if we know "up"
+    if up_world is not None and n_ground > 0:
+        n_c = ref.R @ (-np.asarray(up_world, float))  # unit normal pointing down, in cam coords
+        n_c /= np.linalg.norm(n_c)
+        # signed distances of the sparse points' planes along n_c (floor is below: > 0)
+        Xc = np.array([view_pt for view_pt in _sparse_cam_points(ref, rec)])
+        hts = Xc @ n_c if len(Xc) else np.array([1.0])
+        hts = hts[hts > 0.05 * zmin]
+        if len(hts) > 20:
+            lo_h, hi_h = np.percentile(hts, 2) * 0.8, np.percentile(hts, 99.5) * 1.15
+            gp = np.linspace(lo_h, hi_h, n_ground)
+            c2 = _sweep_family(I, muI, sdI, src_data, Kr_inv, n_c, gp, lambda p_: p_,
+                               win, min_std, h, w)
+            best2, p2, ok2 = _pick(c2, gp, excl, margin, min_ncc)
+            denom = rays @ n_c  # z = dist / (n_c . ray)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                z2 = np.where(denom > 0.05, p2 / denom, 0.0)
+            ok2 &= (z2 > zmin) & (z2 < zmax)
+            take = ok2 & (~ok | (best2 < best))
+            depth = np.where(take, z2, depth)
+            fam[take] = 1
+            ok = ok | ok2
+            best = np.where(take, best2, best)
+    # families 3+: vertical wall planes along the scene's dominant wall directions. Side
+    # walls in a hallway are seen at a grazing angle, like floors, and smear otherwise.
+    for wi, wn in enumerate(wall_normals or []):
+        n_c = ref.R @ np.asarray(wn, float)
+        n_c /= np.linalg.norm(n_c)
+        Xc = _sparse_cam_points(ref, rec)
+        if len(Xc) < 20:
+            break
+        hts = Xc @ n_c
+        lo_d, hi_d = np.percentile(hts, 2), np.percentile(hts, 98)
+        span = hi_d - lo_d
+        gp = np.linspace(lo_d - 0.1 * span, hi_d + 0.1 * span, n_wall)
+        gp = gp[np.abs(gp) > 0.05 * zmin]  # planes through the camera are degenerate
+        if len(gp) < 8:
+            continue
+        cw = _sweep_family(I, muI, sdI, src_data, Kr_inv, n_c, gp, lambda p_: p_,
+                           win, min_std, h, w)
+        bw, pw, okw = _pick(cw, gp, excl, margin, min_ncc)
+        denom = rays @ n_c
+        with np.errstate(divide="ignore", invalid="ignore"):
+            zw = np.where(np.abs(denom) > 0.05, pw / denom, 0.0)
+        okw &= (zw > zmin) & (zw < zmax)
+        take = okw & (~ok | (bw < best))
+        depth = np.where(take, zw, depth)
+        fam[take] = 2 + wi
+        ok = ok | okw
+        best = np.where(take, bw, best)
+    ok &= textured
+    if stats is not None:
+        stats.update(ok=ok.mean(), ground_share=(fam[ok] == 1).mean() if ok.any() else 0.0,
+                     wall_share=(fam[ok] >= 2).mean() if ok.any() else 0.0)
+    D = np.where(ok, depth, 0).astype(np.float32)
+    if edge_tol > 0:
+        D = drop_flying_pixels(D, edge_tol)
+    return cv2.resize(D, (ref.w, ref.h), interpolation=cv2.INTER_NEAREST)
+
+
+def _sparse_cam_points(view, rec=None):
+    rec = view.rec if view.rec is not None else rec
+    if not view.point_ids:
+        return np.zeros((0, 3))
+    X = np.array([rec.points3D[i].xyz for _, i in view.point_ids])
+    return X @ view.R.T + view.t
+
+
+def drop_flying_pixels(D, tol=0.05):
+    """Remove depth at discontinuities ("flying pixels" that streak along view rays).
+
+    On any plane, inverse depth is affine in image coordinates, so its second
+    difference is ~0 even for a floor seen at a grazing angle; at an object boundary it
+    spikes. A pixel is dropped if the second difference of inverse depth (horizontal or
+    vertical), relative to its own inverse depth, exceeds tol. Missing neighbours fall
+    back to a first-difference test with a looser threshold."""
+    valid = D > 0
+    inv = np.where(valid, 1.0 / np.maximum(D, 1e-9), 0).astype(np.float64)
+    bad = np.zeros_like(valid)
+    for axis in (0, 1):
+        a = np.roll(inv, 1, axis); b = np.roll(inv, -1, axis)
+        va = np.roll(valid, 1, axis); vb = np.roll(valid, -1, axis)
+        both = valid & va & vb
+        second = np.abs(a + b - 2 * inv) / np.maximum(inv, 1e-12)
+        bad |= both & (second > tol)
+        one = valid & (va ^ vb)
+        nb = np.where(va, a, b)
+        bad |= one & (np.abs(nb - inv) / np.maximum(inv, 1e-12) > 4 * tol)
+    out = D.copy()
+    out[bad] = 0
+    return out
+
+
 # ---------------------------------------------------------------- fusion
 def backproject(view, D, mask):
     ys, xs = np.nonzero(mask)
@@ -227,6 +444,133 @@ def write_ply(path, P, C):
         fh.write(rec.tobytes())
 
 
+def sweep_sources(v, views_by_tag, order, stereo, med, max_src=4, steps=(2, 3, 5),
+                  target_ratio=0.15):
+    """Sources for plane-sweeping `v`: its stereo partners plus video-time neighbours.
+
+    Partner selection was tuned on orbit captures; in a walk-through many frames get
+    only one partner. The frames a few steps before/after (same sub-model) usually see
+    the same surfaces with useful parallax, so they are added when the viewing angle
+    is < 30 deg and the camera actually moved (baseline > 1% of scene depth)."""
+    cands = list(stereo.get(v.id, []))
+    seq = views_by_tag[v.id[0]]
+    i = order[v.id]
+    for k in steps:
+        for j in (i - k, i + k):
+            if 0 <= j < len(seq):
+                cands.append(seq[j])
+    out, seen = [], {v.id}
+    scored = []
+    for u in cands:
+        if u.id in seen:
+            continue
+        seen.add(u.id)
+        ang = np.degrees(np.arccos(np.clip(v.axis @ u.axis, -1, 1)))
+        ratio = np.linalg.norm(v.C - u.C) / max(med.get(v.id, 1.0), 1e-9)
+        if ang < 30 and ratio > 0.01:
+            scored.append((abs(np.log(ratio / target_ratio)), u))
+    scored.sort(key=lambda x: x[0])
+    return [u for _, u in scored[:max_src]]
+
+
+def dominant_wall_normals(rec, up, k=12):
+    """Two horizontal, orthogonal wall normals (Manhattan world) from the sparse points.
+
+    Local PCA normals of the SfM points; keep those ~perpendicular to gravity (walls),
+    histogram their heading modulo 90 deg and take the peak. Returns [n1, n2] or None."""
+    from scipy.spatial import cKDTree
+    X = np.array([p.xyz for p in rec.points3D.values()])
+    if len(X) < 200:
+        return None
+    if len(X) > 30000:
+        X = X[np.random.default_rng(0).choice(len(X), 30000, replace=False)]
+    _, idx = cKDTree(X).query(X, k=k)
+    nb = X[idx] - X[idx].mean(1, keepdims=True)
+    cov = np.einsum("nki,nkj->nij", nb, nb)
+    w, v = np.linalg.eigh(cov)
+    normals = v[:, :, 0]
+    flat = w[:, 0] < 0.05 * w[:, 1]  # planar neighbourhoods only
+    vert = np.abs(normals @ up) < 0.2  # horizontal normal -> a wall
+    N = normals[flat & vert]
+    if len(N) < 50:
+        return None
+    a = np.cross(up, [1.0, 0, 0] if abs(up[0]) < 0.9 else [0, 1.0, 0]); a /= np.linalg.norm(a)
+    b = np.cross(up, a)
+    ang = np.mod(np.arctan2(N @ b, N @ a), np.pi / 2)
+    hist, edges = np.histogram(ang, bins=90, range=(0, np.pi / 2))
+    hist = np.convolve(np.r_[hist[-2:], hist, hist[:2]], np.ones(5) / 5, "valid")
+    th = edges[np.argmax(hist)] + (edges[1] - edges[0]) / 2
+    n1 = np.cos(th) * a + np.sin(th) * b
+    n2 = np.cross(up, n1)
+    return [n1 / np.linalg.norm(n1), n2 / np.linalg.norm(n2)]
+
+
+def mls_smooth(P, k=16, max_shift_frac=0.5, iters=1):
+    """Moving-least-squares style denoise: project each point onto the plane fitted to
+    its k nearest neighbours. Stereo noise piles up along viewing rays and makes walls
+    look smeared (thick); averaging over the neighbourhood thins them back to a surface.
+    Shifts are capped at max_shift_frac x the neighbourhood size so corners survive."""
+    from scipy.spatial import cKDTree
+    Q = P.copy()
+    for _ in range(iters):
+        _, idx = cKDTree(Q).query(Q, k=k, workers=-1)
+        nb = Q[idx]
+        c = nb.mean(1)
+        d = nb - c[:, None, :]
+        cov = np.einsum("nki,nkj->nij", d, d) / k
+        w, v = np.linalg.eigh(cov)
+        n = v[:, :, 0]
+        off = np.einsum("ni,ni->n", Q - c, n)
+        cap = max_shift_frac * np.sqrt(np.maximum(w[:, 2], 1e-12))
+        Q = Q - np.clip(off, -cap, cap)[:, None] * n
+    return Q
+
+
+# ---------------------------------------------------------------- parallel plane sweep
+_SWEEP = {}  # state shared with worker threads
+
+
+def _sweep_worker(job):
+    i, src_idx, kw = job
+    views = _SWEEP["views"]
+    D = planesweep_multiscale(views[i], [views[k] for k in src_idx], up_world=_SWEEP["up"],
+                              clahe=True, wall_normals=_SWEEP["walls"], **kw)
+    return i, D
+
+
+def _run_sweep_jobs(views, jobs, up_world, wall_normals, workers=None):
+    """Yield (view index, depth) for each job, `workers` frames at a time (threads).
+
+    Threads, not processes: OpenCV/numpy release the GIL in the heavy warps, filters and
+    array maths, and forking after OpenCV has started its thread pool deadlocks the
+    children (seen in testing). Each worker runs OpenCV single-threaded."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    workers = workers or max(1, (os.cpu_count() or 1))
+    _SWEEP.update(views=views, up=up_world, walls=wall_normals)
+    if workers <= 1 or len(jobs) < 2:
+        for j in jobs:
+            yield _sweep_worker(j)
+        return
+    prev = cv2.getNumThreads()
+    cv2.setNumThreads(1)
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for res in ex.map(_sweep_worker, jobs):
+                yield res
+    finally:
+        cv2.setNumThreads(prev)
+
+
+def is_dark(view, thresh=70):
+    """Mean grey level below thresh (0-255): low light -> noisier matching."""
+    if thresh is None or thresh <= 0:
+        return False
+    if not hasattr(view, "_mean_grey"):
+        view._mean_grey = float(cv2.cvtColor(view.img, cv2.COLOR_BGR2GRAY).mean())
+    return view._mean_grey < thresh
+
+
 def merge_depths(A, B, rel_tol=0.02):
     """Fill A's holes from B; where both have depth but disagree, trust neither."""
     out = A.copy()
@@ -241,37 +585,117 @@ def merge_depths(A, B, rel_tol=0.02):
 
 
 def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_frac=0.0015,
-            rel_tol=0.015, min_agree=2, max_views=None, n_partners=2):
+            rel_tol=None, min_agree=None, max_views=None, n_partners=2, extra_sparse=(),
+            method="sweep", temporal_sources=True, walls=False, fusion="tsdf",
+            tsdf_voxel_frac=0.0022, cache_depth=False, dark_thresh=None, dense_every=1,
+            workers=None):
+    """extra_sparse: sub-models already aligned into the main model's frame (see
+    sfm.attach_submodels); their frames that the main model lacks are added as views."""
     t0 = time.time()
+    # Agreement rule: depth kept only if >= min_agree neighbour views agree within
+    # rel_tol. A looser 2%/1-view rule tripled coverage on the real walk-through but
+    # also let reflections and haze through (obstacle cells 8k -> 20k), so strict it is.
+    if rel_tol is None:
+        rel_tol = 0.015
+    if min_agree is None:
+        min_agree = 2
     out_dir.mkdir(parents=True, exist_ok=True)
     rec = pycolmap.Reconstruction(str(sparse_dir))
     imgs = sorted([im for im in rec.images.values() if im.has_pose], key=lambda im: im.name)
     if max_views:
         imgs = imgs[:: max(1, len(imgs) // max_views)]
-    views = [View(im, rec.cameras[im.camera_id], image_dir, scale) for im in imgs]
+    views = [View(im, rec.cameras[im.camera_id], image_dir, scale, rec, 0) for im in imgs]
+    have = {v.name for v in views}
+    for tag, extra_dir in enumerate(extra_sparse, start=1):
+        er = pycolmap.Reconstruction(str(extra_dir))
+        added = [View(im, er.cameras[im.camera_id], image_dir, scale, er, tag)
+                 for im in sorted(er.images.values(), key=lambda im: im.name)
+                 if im.has_pose and im.name not in have]
+        # keep the sub-model's overlap frames too: they are its stereo/consistency partners
+        overlap = [View(im, er.cameras[im.camera_id], image_dir, scale, er, tag)
+                   for im in er.images.values() if im.has_pose and im.name in have]
+        for v in overlap:
+            v.depth_only_support = True
+        views += added + overlap
+        have |= {v.name for v in added}
+        print(f"[mvs] attached sub-model {extra_dir.name}: +{len(added)} new frames", flush=True)
     print(f"[mvs] {len(views)} views loaded {time.time()-t0:.0f}s", flush=True)
     stereo, neigh, med = choose_partners(views, rec)
+    by_tag = {}
+    for v in sorted(views, key=lambda v: v.name):
+        by_tag.setdefault(v.id[0], []).append(v)
+    order = {v.id: i for seq in by_tag.values() for i, v in enumerate(seq)}
+    # gravity guess for ground-parallel sweeping: phones are held upright, so the
+    # image's up axis (camera -Y) averaged over the capture points roughly up
+    up_world = -np.mean([v.R[1] for v in views if v.rec is rec] or [v.R[1] for v in views], 0)
+    up_world = up_world / np.linalg.norm(up_world) if np.linalg.norm(up_world) > 0.3 else None
+    wall_normals = dominant_wall_normals(rec, up_world) if (walls and up_world is not None) else None
+    if wall_normals:
+        print(f"[mvs] wall directions (Manhattan) estimated from sparse points", flush=True)
+    # plane-sweep jobs: (view index, source indices, extra kwargs)
+    index = {v.id: k for k, v in enumerate(views)}
+    jobs = []
+    if method == "sweep":
+        for i, v in enumerate(views):
+            if dense_every > 1 and order.get(v.id, 0) % dense_every:
+                continue  # video neighbours overlap heavily: depth for every k-th frame only,
+                # the skipped ones still serve as stereo sources and consistency checks
+            srcs = sweep_sources(v, by_tag, order, stereo, med) if temporal_sources else \
+                (stereo.get(v.id, [])[:3] or neigh.get(v.id, [])[:3])
+            if srcs:  # fronto + ground planes, fine->coarse, local-contrast boost
+                extra_kw = dict(win=5, min_std=1.0) if is_dark(v, dark_thresh) else {}
+                jobs.append((i, [index[u.id] for u in srcs], extra_kw))
+        for done, (i, D) in enumerate(_run_sweep_jobs(views, jobs, up_world, wall_normals, workers)):
+            views[i].depth = D
+            if done % 25 == 0:
+                cov = (D > 0).mean()
+                print(f"[mvs] stereo {done+1}/{len(jobs)} coverage={cov:.2f} {time.time()-t0:.0f}s",
+                      flush=True)
     for i, v in enumerate(views):
-        got = 0
-        for partner in stereo.get(v.id, []):
-            D = stereo_depth(v, partner, rec)
-            if D is None or (D > 0).mean() < 0.05:
-                continue
-            v.depth = D if v.depth is None else merge_depths(v.depth, D)
-            got += 1
-            if got >= n_partners:
-                break
+        if method == "sweep":
+            continue
+        else:  # rectified SGBM: fast, but only for sideways / orbiting motion
+            got = 0
+            for partner in stereo.get(v.id, []):
+                D = stereo_depth(v, partner, rec)
+                if D is None or (D > 0).mean() < 0.05:
+                    continue
+                v.depth = D if v.depth is None else merge_depths(v.depth, D)
+                got += 1
+                if got >= n_partners:
+                    break
         if i % 25 == 0:
             cov = 0 if v.depth is None else (v.depth > 0).mean()
             print(f"[mvs] stereo {i+1}/{len(views)} coverage={cov:.2f} {time.time()-t0:.0f}s", flush=True)
+    if dense_every > 1:  # agreement must come from neighbours that actually have depth
+        _, neigh_all, _ = choose_partners(views, rec, k_consistency=12)
+        for v in views:
+            neigh[v.id] = [u for u in neigh_all.get(v.id, []) if u.depth is not None][:4]
     allP, allC, cov_raw, cov_fused = [], [], [], []
+    fused_views, fused_masks = [], []
     for v in views:
-        if v.depth is None:
-            continue
-        m = consistency_mask(v, neigh.get(v.id, []), rel_tol, min_agree)
+        if v.depth is None or getattr(v, "depth_only_support", False):
+            continue  # overlap copies only serve as partners for a sub-model's new frames
+        if method == "sweep" and is_dark(v, dark_thresh):
+            # dark frames (opt-in, dark_thresh=70): bigger windows above, looser agreement
+            # here. On the apartment's dark corner alone: 4.1% -> 14.8% trusted depth; but
+            # on the full TSDF map it added ~1% mesh and slightly hurt the robot map
+            # (floor cells seen 6199 -> 5452), so it is off by default.
+            m = consistency_mask(v, neigh.get(v.id, []), 0.02, 1)
+        else:
+            m = consistency_mask(v, neigh.get(v.id, []), rel_tol, min_agree)
         cov_raw.append((v.depth > 0).mean()); cov_fused.append(m.mean())
         P, C = backproject(v, v.depth, m)
-        allP.append(P); allC.append(C)
+        # TSDF reads the depth maps directly; the point list is only needed for the
+        # scene size and a comparison cloud, so keep a sample (a bright, textured scene
+        # gave 89M raw points and exhausted 15 GB of RAM in point fusion)
+        sub = 1 if fusion == "points" else 4
+        allP.append(P[::sub]); allC.append(C[::sub])
+        fused_views.append(v); fused_masks.append(m)
+        if cache_depth:  # re-fuse later without re-running stereo (the slow part)
+            (out_dir / "depth_cache").mkdir(exist_ok=True)
+            np.save(out_dir / "depth_cache" / (v.name + ".npy"),
+                    np.where(m, v.depth, 0).astype(np.float16))
     P = np.concatenate(allP); C = np.concatenate(allC)
     print(f"[mvs] per-view coverage: stereo median {np.median(cov_raw):.2f}, "
           f"after consistency median {np.median(cov_fused):.2f}", flush=True)
@@ -279,16 +703,33 @@ def run_mvs(sparse_dir: Path, image_dir: Path, out_dir: Path, scale=1.0, voxel_f
     # scene-relative voxel size
     extent = np.linalg.norm(np.percentile(P, 98, 0) - np.percentile(P, 2, 0))
     voxel = extent * voxel_frac
-    P, C, cnt = voxel_downsample(P, C, voxel)
-    keep = cnt >= 2  # supported by >1 observation
-    P, C = P[keep], C[keep]
-    P, C = remove_outliers(P, C)
-    print(f"[mvs] after voxel ({voxel:.4f}) + support filter: {len(P):,}", flush=True)
+    if fusion in ("tsdf", "tsdf_fast"):
+        Pp, Cp, cnt = voxel_downsample(P, C, voxel)  # keep the point version to compare
+        write_ply(out_dir / "dense_points.ply", *remove_outliers(Pp[cnt >= 2], Cp[cnt >= 2]))
+        # average all views' depth in a volume -> noise cancels, walls stop smearing
+        from tsdf import fuse_tsdf, fuse_tsdf_fast, write_mesh_ply
+        # "tsdf" carves free space through the whole frustum (cleanest robot map, ~20 min
+        # on the real apartment); "tsdf_fast" only walks rays (~7 min, but leaves more
+        # floaters: floor cells seen 6199 -> 4134, obstacle cells 8863 -> 11020).
+        fuse = fuse_tsdf if fusion == "tsdf" else fuse_tsdf_fast
+        kw = {} if fusion == "tsdf" else dict(free_stride=2, free_step_vox=4, min_weight=3)
+        verts, faces, cols, tv = fuse(fused_views, fused_masks, extent * tsdf_voxel_frac,
+                                      log=lambda m: print(m, flush=True), **kw)
+        write_mesh_ply(out_dir / "mesh.ply", verts, faces, cols)
+        P, C = verts, cols
+        print(f"[mvs] TSDF surface: {len(P):,} vertices (voxel {tv:.4f})", flush=True)
+    else:
+        P, C, cnt = voxel_downsample(P, C, voxel)
+        keep = cnt >= 2  # supported by >1 observation
+        P, C = P[keep], C[keep]
+        P, C = remove_outliers(P, C)
+        print(f"[mvs] after voxel ({voxel:.4f}) + support filter: {len(P):,}", flush=True)
     write_ply(out_dir / "dense.ply", P, C)
     # cameras for the viewer
     cams = [{"name": v.name, "R": v.R.tolist(), "t": v.t.tolist(), "C": v.C.tolist(),
              "fx": float(v.K[0, 0]), "fy": float(v.K[1, 1]), "w": v.w, "h": v.h}
-            for v in views]
+            for v in sorted(views, key=lambda v: v.name)
+            if not getattr(v, "depth_only_support", False)]
     (out_dir / "cameras.json").write_text(json.dumps(cams))
     print(f"[mvs] wrote {out_dir/'dense.ply'} in {time.time()-t0:.0f}s")
     return P, C, views

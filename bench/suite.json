@@ -1,0 +1,10 @@
+{
+  "scans": [
+    {"name": "room", "input": "room/images_4", "reference": "room/sparse/0",
+     "description": "Mip-NeRF 360 room, 311 photos, reference poses"},
+    {"name": "IMG_6075", "input": "IMG_6075.MOV", "description": "robotics lab / office, 85 s"},
+    {"name": "IMG_6077", "input": "IMG_6077.MOV", "description": "apartment, latest walk, 115 s"},
+    {"name": "IMG_6076", "input": "IMG_6076.MOV", "description": "apartment, bright, faces a big window, 91 s"},
+    {"name": "IMG_6070", "input": "IMG_6070.MOV", "description": "apartment, dim evening light, 74 s"}
+  ]
+}

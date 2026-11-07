@@ -12,3 +12,8 @@ DerivedData/
 xcuserdata/
 # Captures received by tools/receive_server.py
 captures/
+.pytest_cache/
+bench/work/
+out_vipe/
+out_splat/
+out_gap/

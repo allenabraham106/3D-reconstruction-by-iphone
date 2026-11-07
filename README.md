@@ -1,12 +1,66 @@
 # 3D reconstruction from iPhone footage
 
-Walk through a room or floor with an iPhone. Get a dense colored 3D point cloud, the camera path, and a **metric, gravity-aligned map a robot can navigate with** (ROS nav2 occupancy grid + 3D voxels).
+Walk through a room or floor with an iPhone. Get a **colored 3D mesh**, the camera path, and a **metric, gravity-aligned map a robot can navigate with** (ROS nav2 occupancy grid + 3D voxels).
 
-![overview](docs/img/full_overview.png)
+[![office fly-around](docs/img/office_flyaround.gif)](docs/video/office_flyaround.mp4)
 
-*311 handheld frames → 1.15 M points. The camera path is blue and the live camera frustum is white. CPU only, about 5 minutes.*
+*A robotics lab filmed with an iPhone 17 (85 s of HDR video, Camera app, nothing special): 277/277 frames placed, a 1.95 M-triangle mesh. The floor with its red tape, desks, chairs, cabinets, whiteboard and the people at their desks are all there. The white camera frustum replays the walk. [Full-quality MP4](docs/video/office_flyaround.mp4); render your own with `tools/record_video.js`.*
+
+![office mesh](docs/img/real_office_mesh.png)
 
 This reproduces the kind of result in the NVIDIA-stack demo (ViPE-style pose and dense-depth reconstruction from phone video). It runs on a normal laptop CPU, with no GPU and no downloaded neural-network weights.
+
+## Real iPhone 17 scans
+
+| | Apartment walk-through | Robotics lab / office |
+|---|---|---|
+| Video | 74 s, 1080p HLG HDR | 85 s, 1080p HLG HDR |
+| Frames placed by SfM | 229 / 231 (gap bridging rescued a dark-corner piece) | **277 / 277** (bridge matching linked two pieces) |
+| Depth kept after multi-view agreement (median per frame) | 13 % | **35 %** |
+| TSDF mesh | 1.70 M triangles | 1.95 M triangles |
+| Time on 4 CPU cores | ~1 h 40 min | ~1 h 45 min |
+
+<img src="docs/img/real_iphone17_tsdf_closeup.png" width="49%"> <img src="docs/img/real_office_occupancy.png" width="49%">
+
+*Left: apartment mesh, close-up along the camera path. Right: office robot map (white = floor seen, green = floor walked over, black = obstacles 8 cm-1.8 m high, grey = unknown, blue = path).*
+
+What these two scans taught the pipeline (each fix measured on them):
+
+- **Walking forward breaks rectified stereo.** Rectified SGBM assumes sideways motion; in a walk-through only 10 of 40 frames got any depth. Replaced with **plane-sweep stereo** (works for any motion): 36 k -> 1 M+ points.
+- **Floors seen at a grazing angle never match camera-facing planes.** The sweep also tests **floor-parallel planes**; with multi-scale and a contrast boost, floor coverage roughly tripled.
+- **Per-pixel depth noise makes walls look smeared.** **TSDF fusion** averages every view into a volume and extracts a mesh, so walls and floors come out as continuous surfaces.
+- **Glossy floors reflect the room.** Points under the floor (mirror images) are dropped, and reflections are no longer mistaken for the floor plane.
+- **SfM splits at dark corners and turns on the spot.** Pieces that share frames are aligned and merged; pieces that share none get targeted **bridge matching** (5 k pairs instead of 38 k).
+- **A window can tear the camera path.** Frames facing a big window or a blank wall have almost no matches, and the mapper glued the rest of the walk on through bad ones: the cameras "teleported" ~11 units between two frames (200x a normal step), turning the living room into a fake 15 x 20 m corridor. SfM now flags any frame-to-frame jump over 20x the median step, cuts the weak frames there and maps again (see [Apartment](#apartment-three-walks-one-map)).
+- **The walker is evidence.** Where you walked, there is floor and nothing in the way: the robot map uses the camera path to add free floor and clear false obstacles.
+
+## Apartment: three walks, one map
+
+Three walks through the same apartment: a dim evening walk (IMG_6070), a brighter one (IMG_6076) and a later one (IMG_6077).
+
+![window fix](docs/img/apartment_window_fix.png)
+
+*The bright walk before and after the jump fix (robot map; white = floor, black = obstacles, blue = path). Before, the camera path tore where the phone faced the living-room window, and everything after it landed ~11 m away. After, the kitchen, living room and hallway line up as one 8.6 x 9.2 m apartment. The dim walk had the same tear at frame 172.*
+
+<img src="docs/img/apartment_6077_mesh.png" width="49%"> <img src="docs/img/apartment_6077_occupancy.png" width="49%">
+
+*The latest walk (IMG_6077, 115 s): 268/274 frames placed, no tears. Living room with sofas, round table and window (top), kitchen island (middle), hallway (left).*
+
+**Merging the walks** (`recon/merge_scans.py`): all frames of the three walks are solved together (761/761 placed). Then each walk's own solve is fitted onto that joint solve, skipping frames where the two disagree (RANSAC), and tightened with ICP on the overlap. Each walk's cached depth is reused, so no stereo re-runs. The walks agree to 0.11-0.18% of the scene size.
+
+<img src="docs/img/apartment_three_walks_paths.png" width="49%"> <img src="docs/img/apartment_merged3_mesh.png" width="49%">
+
+*Left: the three camera paths after the joint solve trace the same rooms. Right: the merged mesh, 745 cameras, 1.48 M triangles.*
+
+![merge maps](docs/img/apartment_merge_maps.png)
+
+*Robot maps from one walk, two, and all three. Two walks give the most seen floor (8,075 free cells vs 6,003-6,945 for one). The three-walk map has the most complete walls, but fewer free cells (6,102): the walks' floors sit a few cm apart in places, and the 8 cm obstacle threshold then counts some floor as obstacle. A per-tile floor height was tried and made 5 of 6 maps worse, so it was dropped. ARKit gravity from the app should remove this offset.*
+
+```bash
+python recon/merge_scans.py out/apartment \
+    --scan out/IMG_6070 --cross 10-66 --scan out/IMG_6076 --cross 0-20,240-290 \
+    --scan out/IMG_6077 --cross 0-274 --cross-step 4
+```
 
 ## Two ways to capture
 
@@ -37,10 +91,14 @@ The viewer works on desktop and in iPhone Safari (drag to orbit, pinch to zoom).
 
 | File | What |
 |---|---|
-| `viewer/` | self-contained web viewer (three.js vendored, works offline) |
-| `dense/dense.ply`, `dense/cameras.json` | raw reconstruction (SfM frame) |
+| `viewer/` | self-contained web viewer (three.js vendored, works offline); shows the mesh, *Points* toggles the cloud, *Inferred floor* shows the imagined-floor layer |
+| `dense/mesh.ply` | TSDF mesh (SfM frame) |
+| `dense/dense.ply`, `dense/cameras.json` | mesh vertices as points + cameras (SfM frame); `dense_points.ply` = plain point fusion, for comparison |
+| `dense/depth_cache/` | trusted depth per frame, so fusion can be re-run without redoing stereo |
+| `robot/mesh_metric.ply` | the mesh in **metres, Z up, floor at Z=0** |
 | `robot/map_metric.ply` | point cloud in **metres, Z up, floor at Z=0** |
-| `robot/occupancy.pgm` + `occupancy.yaml` | **ROS nav2 `map_server` map**, 5 cm cells (free / occupied / unknown) |
+| `robot/occupancy.pgm` + `occupancy.yaml` | **ROS nav2 `map_server` map**, 5 cm cells (free / occupied / unknown): floor seen + floor walked over |
+| `robot/occupancy_with_inferred.pgm/.yaml` | same, plus *inferred* floor (gaps <= 0.5 m with no obstacle seen); `inferred_floor.ply` shows it in 3D |
 | `robot/occupancy_preview.png` | the grid with the capture path drawn on |
 | `robot/voxels.npz` | 5 cm 3D occupancy (`indices`, `origin`, `voxel_size`) for collision / footstep planning |
 | `robot/cameras_metric.json` | camera poses in the robot map frame |
@@ -53,22 +111,23 @@ Occupancy grid for the demo room (white = walkable floor, black = obstacles betw
 ## How it works
 
 ```
-iPhone video ─► frames.py ─► sfm.py ─────────► mvs.py ─────────────► robot_map.py ─► viewer + nav map
-                sharp        COLMAP SIFT,       per-frame stereo        floor RANSAC,
-                keyframes,   sequential         partner, rectify,       gravity align,
-                HDR→SDR      matching,          SGBM + L/R check,       metric scale,
-                             incremental BA     multi-view consistency  occupancy grid
-                                                fusion
+iPhone video ─► frames.py ─► sfm.py ─────────► mvs.py ─────────────► tsdf.py ──► robot_map.py ─► viewer + nav map
+                sharp        COLMAP SIFT,       plane-sweep stereo      volume       floor RANSAC,
+                keyframes,   sequential +       (camera-facing +        fusion,      gravity, metric
+                HDR→SDR      bridge matching,   floor planes), multi-   marching     scale, occupancy,
+                             incremental BA,    view agreement          cubes mesh   walked-path free
+                             gap bridging
 
 Pioneer Home ──► ingest_arkit.py ─► (LiDAR) fuse depth with ARKit poses ─► robot_map.py --metric
                                      (no LiDAR) sfm seeded with ARKit positions + mvs, Sim(3)-align
 ```
 
 1. **`recon/frames.py`** samples the video at about 4× the target keyframe count and keeps the sharpest frame in each window (variance of Laplacian), which drops motion-blurred frames. It also drops near-duplicate frames, from moments when the phone was held still; they add no viewpoint and were splitting SfM into pieces. HLG / Dolby Vision HDR is tone-mapped to SDR (iPhones record HDR by default), the rotation flag is applied, and frames are downscaled to 1280 px.
-2. **`recon/sfm.py`** runs COLMAP via pycolmap: SIFT features with one shared camera (one lens), sequential matching with quadratic overlap (suited to video), and incremental mapping with bundle adjustment. For app captures, the ARKit positions go in as pose priors: frames that were physically close get matched (which catches revisits cheaply), and bundle adjustment stays consistent with ARKit. On the no-LiDAR test this cut SfM from 277 s to 116 s with no split. If fewer than 90% of frames register, it adds exhaustive matching (every pair) so revisited places can link the pieces, then maps again. Outputs are camera poses, intrinsics and lens distortion, and sparse points.
-3. **`recon/mvs.py`** produces dense depth on CPU. For each frame it picks the **two** best stereo partners (baseline-to-depth ratio about 0.07, small rotation, many shared points) and merges their depth: each fills the other's holes, and pixels where they disagree by more than 2% are dropped. It undistorts, rectifies from the SfM poses (vertical layouts are transposed, mirrored layouts are flipped), and runs OpenCV semi-global matching with a left-right consistency check. The disparity range comes from the SfM depths. Each depth pixel is kept only if it **agrees within 1.5% with at least 2 neighboring views' depth maps**. The survivors are back-projected, voxel-averaged, and cleaned with statistical outlier removal.
-4. **`recon/robot_map.py`** finds the floor with RANSAC: the **lowest** well-supported horizontal plane below the cameras (tables and counters are big planes too, so it looks underneath the biggest one). It rotates the floor to Z=0 and sets metric scale. ARKit captures use ARKit's exact gravity. For plain video, it tries every camera axis as "up" and keeps the best-supported floor, so a sideways or wrongly-flagged clip still comes out level. It then writes the nav2 occupancy grid and voxel map.
-5. **`viewer/index.html`** is a three.js point-cloud viewer with a frustum animation.
+2. **`recon/sfm.py`** runs COLMAP via pycolmap: SIFT features with one shared camera (one lens), sequential matching with quadratic overlap (suited to video), and incremental mapping with bundle adjustment. For app captures, the ARKit positions go in as pose priors: frames that were physically close get matched (which catches revisits cheaply), and bundle adjustment stays consistent with ARKit. On the no-LiDAR test this cut SfM from 277 s to 116 s with no split. If fewer than 90% of frames register, it matches the frames outside the main piece against every 3rd frame of it (**bridge matching**), falling back to exhaustive matching only if that isn't enough, then maps again. Leftover pieces that share frames with the main model are aligned into it (`attach_submodels`). Outputs are camera poses, intrinsics and lens distortion, and sparse points.
+3. **`recon/mvs.py`** produces dense depth on CPU with **plane-sweep stereo** (default; `--stereo sgbm` keeps the older rectified stereo for orbit captures). For each frame it takes up to 4 sources (stereo partners plus video-time neighbours, baseline about 0.15 of scene depth) and sweeps two families of planes: facing the camera, and parallel to the floor. The matching cost is ZNCC, which ignores the exposure changes phones make between frames, and it runs fine-to-coarse so weakly textured surfaces get filled. Depth edges ("flying pixels") are dropped. Dark frames get bigger windows and a looser agreement rule. Each depth pixel is kept only if it **agrees within 1.5% with at least 2 neighbouring views**.
+4. **`recon/tsdf.py`** fuses all trusted depth maps into a truncated signed distance volume (free space is carved through each view's whole frustum) and extracts a coloured mesh with marching cubes.
+5. **`recon/robot_map.py`** finds the floor with RANSAC: the **lowest** well-supported horizontal plane below the cameras (tables and counters are big planes too, so it looks underneath the biggest one). It rotates the floor to Z=0 and sets metric scale. ARKit captures use ARKit's exact gravity. For plain video, it tries every camera axis as "up" and keeps the best-supported floor, so a sideways or wrongly-flagged clip still comes out level. Points under the floor (reflections) are dropped. It then writes the nav2 occupancy grid (obstacles judged relative to point density; your walking path adds free floor and clears false obstacles) and the voxel map.
+6. **`viewer/index.html`** is a three.js mesh / point-cloud viewer with a frustum animation.
 
 ## Measured results (Mip-NeRF 360 *room* scene, 311 handheld frames, 4-core CPU)
 
@@ -109,21 +168,39 @@ The kitchen capture circles a table and almost never sees the floor, so the map 
 
 Reproduce: `python tests/eval_poses.py out/<name>/sfm/sparse_best <reference sparse dir>`; ARKit round-trip test: `tests/make_synthetic_arkit.py`.
 
+## Benchmark (`bench/`)
+
+A fixed suite (the room scene with reference poses, plus the office and three apartment videos), scored the same way for any pipeline, so CPU and GPU runs can be compared side by side. Results and what each number means: [bench/README.md](bench/README.md); the CPU baseline is in [bench/results/cpu-baseline](bench/results/cpu-baseline/README.md).
+
+```bash
+python bench/benchmark.py run --label gpu-vipe --pipeline gpu --data ~/bench_data
+python bench/benchmark.py compare cpu-baseline gpu-vipe
+```
+
+## Robot: ROS 2 / nav2 (`ros2/pioneer_map`)
+
+```bash
+ros2 launch pioneer_map map.launch.py robot_dir:=/path/to/out/<scan>/robot
+```
+
+This serves `/map` (nav2 `map_server`, 5 cm occupancy grid), `/pioneer/voxels` (PointCloud2, 5 cm 3D occupancy) and `/pioneer/mesh` (an RViz marker), all in the `map` frame: metres, Z up, floor at 0. See [`ros2/pioneer_map/README.md`](ros2/pioneer_map/README.md). The map loaders are unit-tested on the real office scan; the ROS node itself hasn't run on a live ROS install yet.
+
 ## iOS app: Pioneer Home (`ios/`)
 
 <img src="docs/images/pioneer-home/icon.png" width="72" align="left" style="margin-right:12px">
 
 **Pioneer Home** is the capture app for the Pioneer humanoid: SwiftUI + ARKit, iOS 17+, in WATonomous colours. You walk a room, and it saves keyframes with ARKit's metric, gravity-aligned camera poses (plus LiDAR depth and mesh on Pro iPhones). Then you AirDrop or upload the scan and run `python run.py <capture> --arkit`. Setup, capture format and details are in [`ios/README.md`](ios/README.md) and [`docs/PHONESCAN.md`](docs/PHONESCAN.md). (The Xcode project and folders keep the code name `PhoneScan`.)
 
-| <img src="docs/images/pioneer-home/home.webp" width="180"> | <img src="docs/images/pioneer-home/mapping.webp" width="180"> | <img src="docs/images/pioneer-home/scans.webp" width="180"> | <img src="docs/images/pioneer-home/on-pioneer.webp" width="180"> |
+| <img src="docs/images/pioneer-home/home-light.webp" width="180"> | <img src="docs/images/pioneer-home/map-light.webp" width="180"> | <img src="docs/images/pioneer-home/mapping-light.webp" width="180"> | <img src="docs/images/pioneer-home/scans-light.webp" width="180"> |
 |:-:|:-:|:-:|:-:|
-| Home: 3D map, Pioneer localized | Mapping | My Scans | Maps on Pioneer |
+| <img src="docs/images/pioneer-home/home-dark.webp" width="180"> | <img src="docs/images/pioneer-home/map-dark.webp" width="180"> | <img src="docs/images/pioneer-home/mapping-dark.webp" width="180"> | <img src="docs/images/pioneer-home/scans-dark.webp" width="180"> |
+| Home: Pioneer and its status | Map: Pioneer localized | Mapping | Scans |
 
-*Mockups drawn from the SwiftUI code; the app compiles in CI but hasn't run on a phone yet.*
+*Mockups drawn from the SwiftUI layout, light and dark (the app follows the system setting, or pick one in Settings); the app compiles in CI but hasn't run on a phone yet.*
 
-**Home** is the robot's 3D map: the scan as a coloured point cloud you can orbit (walls cut at 1.4 m so you see into the room), the scan route as a trail, and **Pioneer itself, built from its URDF** (`pioneer_whole_body_humanoid.urdf`: hands, every finger joint, 6-joint legs), standing where it last localized and walking to each new fix. Round buttons find Pioneer, switch top / 3D view, recenter, fly through the scan, and localize the phone. Below the map, status chips (Connected, Localized, ROS), a headline, and two big actions that follow Pioneer's state.
+**Home** shows Pioneer itself (a studio render of the final humanoid), a one-line status (Offline, Localized · living-room, Building the map…) and a headline that follows what it's doing, four round shortcuts (Localize, Scan room, Send scan, Map) and a short list. **Map** opens full screen: the scan as a coloured point cloud you can orbit (walls cut at 1.4 m so you see into the room), the scan route as a trail, and **Pioneer built from its URDF** (`pioneer_whole_body_humanoid.urdf`: hands, every finger joint, 6-joint legs), standing where it last localized and walking to each new fix. Round buttons find Pioneer, recenter, fly through the scan and localize the phone; a 3D / Top switch sits at the top, and the card below gives the map, Pioneer's position and the next action.
 
-**Mapping** guides you live (too fast, low detail, tilt up and down, head back to start, loop closed) with a mini-map, Pace and Detail meters, ARKit tracking dots on iPhones without LiDAR, and **Pause** / **Stop**. **My Scans** lists what's on the phone and on Pioneer (pick the active map). The robot model comes from `tools/urdf_to_app_model.py` (1.2M CAD triangles → 90k, every joint kept); the source URDF is Apache-2.0, from [WATonomous/pioneer_humanoid](https://github.com/WATonomous/pioneer_humanoid). Headlines use the WATonomous font if a `.otf`/`.ttf` is dropped into `ios/PhoneScan/`, else SF Pro Expanded.
+**Mapping** guides you live (too fast, low detail, tilt up and down, head back to start, loop closed) with a timer, a mini-map, Pace and Detail meters, ARKit tracking dots on iPhones without LiDAR, and pause / record / live-mesh buttons. **Scans** lists what's on the phone and on Pioneer (pick the active map). The robot model comes from `tools/urdf_to_app_model.py` (1.2M CAD triangles → 90k, every joint kept); the source URDF is Apache-2.0, from [WATonomous/pioneer_humanoid](https://github.com/WATonomous/pioneer_humanoid). Headlines use the WATonomous font if a `.otf`/`.ttf` is dropped into `ios/PhoneScan/`, else SF Pro Expanded.
 
 In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, scan, then AirDrop or upload the capture and run `python run.py <capture> --arkit`. Its upload receiver can run that automatically: `python3 tools/receive_server.py --on-upload "python run.py {dir} --arkit"`.
 
@@ -133,7 +210,7 @@ In short: open `ios/PhoneScan.xcodeproj`, pick your team, run it on the phone, s
 
 ## Robot link: localize the robot in the phone's map (`robot_link/`)
 
-<img src="docs/images/pioneer-home/home.webp" width="220" align="right">
+<img src="docs/images/pioneer-home/map-light.webp" width="220" align="right">
 
 The phone builds the map, and the robot localizes itself in it. `robot_link` turns a `run.py` output into a **relocalization map**: SIFT landmarks triangulated from the keyframes at their known poses, in the robot map frame (metres, Z up, floor at Z = 0, the same frame as `occupancy.yaml`). Localizing a new camera image is then one PnP + RANSAC solve, with no SfM on the robot.
 
@@ -181,7 +258,8 @@ Tested with a different made-up humanoid (`tests/test_robot_link.py::test_bring_
 
 ## Capture tips
 
-- Walk **slowly**, and move the phone **sideways** through the space rather than standing still and panning. Stereo and SfM need parallax.
+- Walk **slowly**, and move the phone **sideways** through the space rather than standing still and panning. Stereo and SfM need parallax. Keep the same slow pace in hallways (the apartment hallway was walked twice as fast and got half the depth).
+- Lights on. People sitting still are fine; people walking through leave ghosts.
 - Cover the floor. The robot map's free space comes from seeing the floor.
 - Avoid blank white walls filling the frame, mirrors, and fast turns.
 - For a whole floor, keep loops short and come back past earlier spots so SfM can close loops.
@@ -190,8 +268,11 @@ Tested with a different made-up humanoid (`tests/test_robot_link.py::test_bring_
 ## Known limitations / next steps
 
 - **Video-only scale** comes from an assumed phone height (on the test clip it came out 4 % off). Use the app (ARKit) for real metres: 0.05 % off even without LiDAR.
-- **Not yet tested on real iPhone 17 footage.** Everything above is the real pipeline on real images, but the iPhone files and captures are simulated.
-- **Textureless surfaces** (plain walls, glossy floors) still get sparse stereo coverage, even with two partners per frame. LiDAR fixes this on Pro phones. A learned monocular-depth prior (as ViPE uses) would help without LiDAR; it was left out because this environment couldn't fetch model weights safely.
+- **Glass walls and windows** show up as floating fragments (stereo sees through them or matches reflections), and the robot map has no wall there. Real depth sensors share this problem.
+- **Dark areas and plain walls** still leave holes; walking slowly with the lights on helps most. In the apartment, the dark corner kept 5x less depth than the bright rooms.
+- **Speed:** about 1-1.5 h per 1-2 min of video on 4 CPU cores. Plane-sweep frames now run in parallel (2.3x, identical depth), so dense stereo takes ~22 min and TSDF ~20 min. `fusion="tsdf_fast"` (7 min fusion) is available for previews but leaves more floaters. A GPU would make this minutes.
+- **Tried and parked** (measured, opt-in, off by default): a dark-frame mode (3.6x depth in the dark corner alone, but no gain on the full map) and glass-wall detection (finds the right side of the office's glass wall, but places it ~1 m too far out).
+- **Textureless surfaces** (plain walls, glossy floors) still get sparse stereo coverage. LiDAR fixes this on Pro phones. A learned monocular-depth prior (as ViPE uses) would help without LiDAR; it was left out because this environment couldn't fetch model weights safely.
 - Speed: bundle adjustment now runs less often (when the model grows 1.4× instead of 1.1×), which cut SfM time 7–15 % with identical accuracy on the room and kitchen. Tried and rejected: the global (GLOMAP-style) mapper was no faster on these scenes and got the room badly wrong; 4096 instead of 8192 SIFT features gave no consistent gain.
 - Large multi-room floors: SfM time grows with frame count. Next steps are vocabulary-tree loop closure and `pose_only_long`-style windowed processing.
-- GPU path: on an NVIDIA machine, NVIDIA's ViPE (`pip install nvidia-vipe`) can replace `sfm.py` + `mvs.py`, and nvblox can do real-time TSDF/ESDF mapping on the robot itself.
+- GPU path: on an NVIDIA machine, NVIDIA's ViPE (`pip install nvidia-vipe`) can replace `sfm.py` + `mvs.py`, and nvblox can do real-time TSDF/ESDF mapping on the robot itself. `gpu/` has the one-command ViPE run plus a Gaussian-splat step for photoreal fly-throughs (see [gpu/README.md](gpu/README.md)).

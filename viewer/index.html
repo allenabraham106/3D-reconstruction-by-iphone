@@ -31,6 +31,8 @@
     <button id="play">Pause</button>
     <button id="follow">Follow camera</button>
     <button id="allcams">All cameras</button>
+    <button id="inferred" hidden>Inferred</button>
+    <button id="meshbtn" hidden>Points</button>
     <label>Point size <input id="psize" type="range" min="0.5" max="6" step="0.1" value="2"></label>
   </div>
   <div class="row"><label>Open .ply / cameras.json <input id="file" type="file" multiple accept=".ply,.json" hidden></label></div>
@@ -68,7 +70,10 @@ function parsePLY(buf) {
   const head = new TextDecoder().decode(new Uint8Array(buf, 0, Math.min(4096, buf.byteLength)));
   const end = head.indexOf("end_header\n") + "end_header\n".length;
   const n = parseInt(/element vertex (\d+)/.exec(head)[1]);
-  const props = [...head.slice(0, end).matchAll(/property (\w+) (\w+)/g)].map(m => [m[1], m[2]]);
+  // vertex properties only (the face element has its own "property list ..." line)
+  const vsec = head.slice(head.indexOf("element vertex"), end);
+  const vsec2 = vsec.indexOf("element", 1) > 0 ? vsec.slice(0, vsec.indexOf("element", 1)) : vsec;
+  const props = [...vsec2.matchAll(/property (\w+) (\w+)/g)].map(m => [m[1], m[2]]);
   const size = { float: 4, float32: 4, uchar: 1, uint8: 1, double: 8 };
   const stride = props.reduce((s, p) => s + size[p[0]], 0);
   const dv = new DataView(buf, end);
@@ -82,12 +87,52 @@ function parsePLY(buf) {
     if (off.red) { col[3*i] = rd(b, off.red)/255; col[3*i+1] = rd(b, off.green)/255; col[3*i+2] = rd(b, off.blue)/255; }
     else col.fill(0.8, 3*i, 3*i+3);
   }
-  return { pos, col, n };
+  // optional triangle faces ("element face N" / "property list uchar int ...")
+  let index = null;
+  const fm = /element face (\d+)/.exec(head);
+  if (fm && +fm[1] > 0) {
+    const nf = +fm[1];
+    index = new Uint32Array(nf * 3);
+    const fdv = new DataView(buf, end + n * stride);
+    let o = 0, k = 0;
+    for (let i = 0; i < nf; i++) {
+      const c = fdv.getUint8(o); o += 1;
+      for (let j = 0; j < c; j++) { const v = fdv.getInt32(o, true); o += 4; if (j < 3) index[k++] = v; }
+    }
+  }
+  return { pos, col, n, index };
 }
 
 let points, cams = [], frustums, traj, liveFrustum, trail, center = new THREE.Vector3(), radius = 1;
-const pointMat = new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true });
+const qs = new URLSearchParams(location.search);
+const pointMat = new THREE.PointsMaterial({ size: +(qs.get("ps") || 2), sizeAttenuation: false, vertexColors: true });
+// ?cut=2.1 : dollhouse view, hide everything higher than 2.1 m above the floor (z-up maps only)
+const cutPlanes = qs.get("cut") ? [new THREE.Plane(new THREE.Vector3(0, -1, 0), +qs.get("cut"))] : [];
+renderer.localClippingEnabled = cutPlanes.length > 0;
+pointMat.clippingPlanes = cutPlanes;
+const preferPoints = qs.get("show") === "points";   // ?show=points : start on the point cloud
 
+// TSDF mesh (solid surface). When present it is shown instead of the point cloud.
+let mesh = null;
+const meshBtn = document.getElementById("meshbtn");
+meshBtn.onclick = () => {
+  if (!mesh) return;
+  mesh.visible = !mesh.visible; if (points) points.visible = !mesh.visible;
+  meshBtn.textContent = mesh.visible ? "Points" : "Mesh";
+};
+function setMesh(p) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(p.pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
+  g.setIndex(new THREE.BufferAttribute(p.index, 1));
+  mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide,
+                                                          clippingPlanes: cutPlanes }));
+  root.add(mesh);
+  if (preferPoints) { mesh.visible = false; meshBtn.textContent = "Mesh"; }
+  else if (points) points.visible = false;
+  meshBtn.hidden = false;
+  statusEl.textContent = `${(p.index.length / 3).toLocaleString()} triangles` + (cams.length ? ` · ${cams.length} cameras` : "");
+}
 function setPLY(p) {
   if (points) root.remove(points);
   const g = new THREE.BufferGeometry();
@@ -95,7 +140,8 @@ function setPLY(p) {
   g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
   g.computeBoundingSphere();
   points = new THREE.Points(g, pointMat); root.add(points);
-  statusEl.textContent = `${p.n.toLocaleString()} points` + (cams.length ? ` · ${cams.length} cameras` : "");
+  if (mesh) points.visible = !mesh.visible;
+  if (!mesh) statusEl.textContent = `${p.n.toLocaleString()} points` + (cams.length ? ` · ${cams.length} cameras` : "");
   frame();
 }
 
@@ -154,6 +200,40 @@ let playing = true, follow = false, t = 0;
 document.getElementById("play").onclick = (e) => { playing = !playing; e.target.textContent = playing ? "Pause" : "Play"; };
 document.getElementById("follow").onclick = (e) => { follow = !follow; e.target.style.borderColor = follow ? "#7cc4ff" : ""; if (!follow) frame(); };
 document.getElementById("allcams").onclick = () => { if (frustums) frustums.visible = !frustums.visible; };
+// Inferred ("imagined") floor: walked-over or small gaps the cameras never saw. Shown
+// tinted blue so it can't be confused with observed geometry.
+let inferredPts = null;
+const inferredBtn = document.getElementById("inferred");
+let inferredMesh = null;
+inferredBtn.onclick = () => {
+  const on = !((inferredPts && inferredPts.visible) || (inferredMesh && inferredMesh.visible));
+  if (inferredPts) inferredPts.visible = on;
+  if (inferredMesh) inferredMesh.visible = on;
+  inferredBtn.style.borderColor = on ? "#7cc4ff" : "";
+};
+// Inferred mesh patches (small wall/floor holes closed in the TSDF volume): blue tint too.
+function setInferredMesh(p) {
+  for (let i = 0; i < p.col.length; i += 3) {
+    p.col[i] = p.col[i] * 0.55 + 0.10; p.col[i+1] = p.col[i+1] * 0.6 + 0.2; p.col[i+2] = p.col[i+2] * 0.5 + 0.5;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(p.pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
+  g.setIndex(new THREE.BufferAttribute(p.index, 1));
+  inferredMesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  inferredMesh.visible = false; root.add(inferredMesh);
+  inferredBtn.hidden = false;
+}
+function setInferred(p) {
+  for (let i = 0; i < p.col.length; i += 3) {  // tint toward blue
+    p.col[i] = p.col[i] * 0.55 + 0.10; p.col[i+1] = p.col[i+1] * 0.6 + 0.2; p.col[i+2] = p.col[i+2] * 0.5 + 0.5;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(p.pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
+  inferredPts = new THREE.Points(g, pointMat); inferredPts.visible = false; root.add(inferredPts);
+  inferredBtn.hidden = false;
+}
 document.getElementById("psize").oninput = (e) => pointMat.size = +e.target.value;
 
 function tick(dt) {
@@ -172,6 +252,50 @@ function tick(dt) {
 let last = performance.now();
 renderer.setAnimationLoop((now) => { tick((now - last) / 1000); last = now; controls.update(); renderer.render(scene, camera); });
 
+// ---------- deterministic frame rendering (for recording a fly-around video) ----------
+// window.__renderFrame(u, opts): u in [0, 1] = progress along the capture path; the view
+// orbits the scene (opts.orbit turns, default 0.5) while the live frustum walks the path.
+window.__renderFrame = (u, opts = {}) => {
+  renderer.setAnimationLoop(null);              // stop real-time playback
+  document.getElementById("hud").style.display = opts.hud ? "" : "none";
+  if (cams.length) { t = Math.min(cams.length - 1, u * (cams.length - 1)); playing = false; tick(0); }
+  const turns = opts.orbit ?? 0.5, a0 = opts.start ?? 0.6;
+  const ang = a0 + u * turns * 2 * Math.PI;
+  const r = radius * (opts.dist ?? 0.85), h = radius * (opts.height ?? 0.7);
+  camera.position.set(center.x + r * Math.cos(ang), center.y + h, center.z + r * Math.sin(ang));
+  camera.lookAt(center);
+  renderer.render(scene, camera);
+  return true;
+};
+
+// window.__renderCam(i, opts): render exactly what recorded camera i saw (its pose and focal
+// length), overlays hidden, for side-by-side comparisons with the real photo. opts.fy and
+// opts.h override the camera's focal length / image height (pixels) if they differ.
+window.__renderCam = (i, opts = {}) => {
+  renderer.setAnimationLoop(null);
+  document.getElementById("hud").style.display = "none";
+  [frustums, traj, liveFrustum, trail].forEach(o => o && (o.visible = false));
+  const c = cams[Math.max(0, Math.min(cams.length - 1, i))];
+  const R = c.R;   // cam_from_world: rows are the camera's x, y, z axes in world coordinates
+  const m = new THREE.Matrix4().set(        // OpenCV camera -> three.js camera (y up, looks down -z)
+    R[0][0], -R[1][0], -R[2][0], c.C.x,
+    R[0][1], -R[1][1], -R[2][1], c.C.y,
+    R[0][2], -R[1][2], -R[2][2], c.C.z,
+    0, 0, 0, 1);
+  root.updateMatrixWorld(true);
+  camera.matrixAutoUpdate = false;
+  camera.matrix.copy(root.matrixWorld).multiply(m);
+  camera.matrixWorldNeedsUpdate = true;
+  camera.updateMatrixWorld(true);
+  const fy = opts.fy ?? c.fy, h = opts.h ?? c.h;
+  camera.fov = 2 * Math.atan(h / 2 / fy) * 180 / Math.PI;
+  camera.aspect = innerWidth / innerHeight;
+  camera.near = 0.05;
+  camera.updateProjectionMatrix();
+  renderer.render(scene, camera);
+  return c.name;
+};
+
 // ---------- loading: ?ply=..&cams=.. , defaults, file picker, drag-drop ----------
 async function loadFiles(files) {
   for (const f of files) {
@@ -189,6 +313,9 @@ const q = new URLSearchParams(location.search);
 const plyURL = q.get("ply") || "dense.ply", camURL = q.get("cams") || "cameras.json";
 try { const r = await fetch("view.json"); if (r.ok) knownUp = (await r.json()).up || null; } catch {}
 try { const r = await fetch(camURL); if (r.ok) setCams(await r.json()); } catch {}
+try { const r = await fetch("inferred_floor.ply"); if (r.ok) setInferred(parsePLY(await r.arrayBuffer())); } catch {}
+try { const r = await fetch("mesh_inferred.ply"); if (r.ok) { const m = parsePLY(await r.arrayBuffer()); if (m.index && m.index.length) setInferredMesh(m); } } catch {}
+try { const r = await fetch("mesh.ply"); if (r.ok) { const m = parsePLY(await r.arrayBuffer()); if (m.index) setMesh(m); } } catch {}
 try { const r = await fetch(plyURL); if (r.ok) setPLY(parsePLY(await r.arrayBuffer()));
       else statusEl.textContent = "Open or drop dense.ply + cameras.json"; }
 catch { statusEl.textContent = "Open or drop dense.ply + cameras.json"; }
