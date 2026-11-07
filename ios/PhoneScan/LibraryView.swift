@@ -11,6 +11,7 @@ struct LibraryView: View {
     enum Where: Hashable { case phone, robot }
     @State private var showing: Where = .phone
     @State private var shareItem: ShareItem?
+    @State private var sharedZip: URL?   // shareItem is already nil when onDismiss runs
     @State private var pendingDelete: CaptureItem?
     @State private var showCapture = false
 
@@ -43,7 +44,9 @@ struct LibraryView: View {
         .fullScreenCover(isPresented: $showCapture) { CaptureView() }
         .onAppear { library.refresh() }
         .refreshable { library.refresh() }
-        .sheet(item: $shareItem) { item in ActivityView(items: [item.url]) }
+        .sheet(item: $shareItem, onDismiss: { sharedZip.map { try? FileManager.default.removeItem(at: $0) } }) { item in
+            ActivityView(items: [item.url])
+        }
         .confirmationDialog("Delete this scan?", isPresented: Binding(
             get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
         ), titleVisibility: .visible, presenting: pendingDelete) { item in
@@ -119,7 +122,7 @@ struct LibraryView: View {
 
     private func share(_ item: CaptureItem) {
         Task {
-            if let zip = try? await library.makeZip(item) { shareItem = ShareItem(url: zip) }
+            if let zip = try? await library.makeZip(item) { sharedZip = zip; shareItem = ShareItem(url: zip) }
         }
     }
 

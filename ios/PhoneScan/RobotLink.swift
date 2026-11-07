@@ -218,8 +218,16 @@ final class RobotLink: ObservableObject {
         req.timeoutInterval = 900
         req.setValue("application/zip", forHTTPHeaderField: "Content-Type")
         req.setValue(name, forHTTPHeaderField: "X-Capture-Name")
+        defer { try? FileManager.default.removeItem(at: zip) }
         do {
-            _ = try await URLSession.shared.upload(for: req, fromFile: zip)
+            let (data, resp) = try await withBackgroundTime("Send scan") {
+                try await URLSession.shared.upload(for: req, fromFile: zip)
+            }
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            if code != 200 {
+                let reason = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["reason"] as? String
+                error = "Robot rejected \(name) (\(code)): \(reason ?? String(decoding: data.prefix(200), as: UTF8.self))"
+            }
             await refresh(urlString, quiet: true)
         } catch {
             self.error = "Upload failed: \(error.localizedDescription)"
