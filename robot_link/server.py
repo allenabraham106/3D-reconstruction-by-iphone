@@ -17,10 +17,19 @@ The app connects to http://<robot>:8770 and can:
     GET  /map/topdown.png        photo-like top-down view of the scan, aligned with the grid
     GET  /map/cloud.ply          the coloured 3D scan for the app's 3D map (walls cut at 1.4 m, <= 400k points)
     GET  /map/path.json          the scan route: keyframe camera positions, in order
+    GET  /camera/stream          live view from the robot's camera (MJPEG, ~10 fps, <= 960 px wide)
+    GET  /camera/snapshot.jpg    one frame from the robot's camera
+    GET  /robot/model            this robot's 3D model for the app (from --robot-urdf / --robot-model);
+                                 404 if none, and the app shows its built-in Pioneer
     POST /localize?source=robot  grab a frame from the robot camera and localize it
     POST /localize?source=phone  body = JPEG, headers X-Fx X-Fy X-Cx X-Cy: localize the phone
     POST /upload                 body = zipped Pioneer Home capture, header X-Capture-Name:
                                  runs run.py --arkit, then builds the relocalization map
+
+Any humanoid works: pass --robot-urdf (plus --robot-forward if it doesn't face +x, as REP-103
+robots do) and the app draws that robot, with its name, instead of the Pioneer:
+
+    python -m robot_link.server --maps out --robot-urdf ~/my_robot/urdf/robot.urdf --name "Atlas"
 
 Every pose is in the robot map frame: metres, Z up, floor at Z = 0, the same frame as
 robot/occupancy.yaml. With --ros, robot poses are published as /initialpose
@@ -135,6 +144,77 @@ class RosCamera(Camera):
         raise RuntimeError(f"no image on {self.topic} (and camera_info) within 3 s")
 
 
+class FrameHub:
+    """Shares one camera between any number of live viewers.
+
+    A single thread grabs frames only while someone is watching, caps the rate (the camera is
+    also used for localization), shrinks them for Wi-Fi and JPEG-encodes once for everybody.
+    """
+    def __init__(self, camera: Camera, fps: float = 10.0, max_width: int = 960, quality: int = 75):
+        self.camera, self.fps, self.max_width, self.quality = camera, fps, max_width, quality
+        self.cond = threading.Condition()
+        self.jpeg: bytes | None = None
+        self.size = (0, 0)
+        self.seq = 0
+        self.viewers = 0
+        self.error: str | None = None
+        self.measured_fps = 0.0
+        self._thread: threading.Thread | None = None
+
+    def _encode(self, img: np.ndarray) -> bytes:
+        h, w = img.shape[:2]
+        if w > self.max_width:
+            img = cv2.resize(img, (self.max_width, int(h * self.max_width / w)), interpolation=cv2.INTER_AREA)
+        self.size = (img.shape[1], img.shape[0])
+        return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, self.quality])[1].tobytes()
+
+    def _run(self):
+        last = time.time()
+        while True:
+            with self.cond:
+                if self.viewers == 0:
+                    self._thread = None
+                    return
+            t0 = time.time()
+            try:
+                img, _ = self.camera.grab()
+                jpg = self._encode(img)
+                with self.cond:
+                    self.jpeg, self.seq, self.error = jpg, self.seq + 1, None
+                    dt = max(1e-3, time.time() - last)
+                    self.measured_fps = 0.8 * self.measured_fps + 0.2 * (1 / dt) if self.measured_fps else 1 / dt
+                    last = time.time()
+                    self.cond.notify_all()
+            except Exception as e:  # camera unplugged, topic silent...
+                with self.cond:
+                    self.error = str(e)
+                    self.cond.notify_all()
+                time.sleep(0.5)
+            time.sleep(max(0.0, 1 / self.fps - (time.time() - t0)))
+
+    def join(self):
+        with self.cond:
+            self.viewers += 1
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, daemon=True)
+                self._thread.start()
+
+    def leave(self):
+        with self.cond:
+            self.viewers = max(0, self.viewers - 1)
+
+    def next_frame(self, after: int, timeout: float = 3.0) -> tuple[int, bytes | None]:
+        with self.cond:
+            self.cond.wait_for(lambda: self.seq > after or self.error is not None, timeout)
+            if self.seq > after:
+                return self.seq, self.jpeg
+            return after, None
+
+    def snapshot(self) -> bytes:
+        img, _ = self.camera.grab()
+        return self._encode(img)
+
+
 # ----------------------------------------------------------------------------- ROS output
 
 class RosPublisher:
@@ -171,6 +251,40 @@ class RosPublisher:
         cov[35] = math.radians(3) ** 2    # yaw: 3 degrees
         msg.pose.covariance = cov.tolist()
         self.initial.publish(msg)
+
+
+def _model_info(path: Path) -> dict:
+    """Name, height, joint count and a content id for a .robot file (the app caches by id)."""
+    import hashlib
+    import struct
+    data = path.read_bytes()
+    if data[:4] != b"PRBT":
+        raise SystemExit(f"{path} is not a robot model (convert a URDF with --robot-urdf)")
+    n = struct.unpack("<I", data[4:8])[0]
+    m = json.loads(data[8:8 + n])
+    joints = sum(1 for L in m["links"] if L.get("joint") and L["joint"]["type"] in ("revolute", "continuous"))
+    return {"name": m.get("name"), "height": round(m.get("height", 0), 2), "joints": joints,
+            "id": hashlib.sha1(data).hexdigest()[:12], "bytes": len(data), "source": m.get("source")}
+
+
+def prepare_robot_model(urdf: Path, cache_dir: Path, forward: str = "+x", gait: Path | None = None,
+                        name: str | None = None, triangles: int = 90_000) -> Path:
+    """Convert a URDF once (cached by the URDF's and its meshes' content) to the app's .robot format."""
+    import hashlib
+    sys.path.insert(0, str(ROOT / "tools"))
+    from urdf_to_app_model import convert
+    h = hashlib.sha1()
+    h.update(urdf.read_bytes())
+    for f in sorted(urdf.parent.rglob("*")):
+        if f.is_file() and f.suffix.lower() in (".stl", ".obj", ".dae", ".glb", ".gltf", ".ply"):
+            h.update(f.name.encode())
+            h.update(str(f.stat().st_size).encode())
+    h.update(f"{forward}|{gait}|{name}|{triangles}".encode())
+    out = cache_dir / f"{urdf.stem}-{h.hexdigest()[:10]}.robot"
+    if not out.exists():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        convert(urdf, out, triangles, None, forward, gait, name, source=urdf.name)
+    return out
 
 
 def _read_ply_xyzrgb(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -220,9 +334,12 @@ def base_from_camera_matrix(spec: str) -> np.ndarray:
 
 class RobotLink:
     def __init__(self, maps: Path, name: str, camera: Camera, publisher: RosPublisher | None,
-                 captures: Path):
+                 captures: Path, robot_model: Path | None = None):
         self.maps_root = maps
         self.name = name
+        self.robot_model = robot_model
+        self.robot_info = _model_info(robot_model) if robot_model else None
+        self.frames = FrameHub(camera)
         self.camera = camera
         self.publisher = publisher
         self.captures = captures
@@ -250,7 +367,10 @@ class RobotLink:
     def status(self) -> dict:
         info = self.localizer.grid if self.localizer else None
         return {"name": self.name, "map": self.active, "maps": self.available_maps(),
+                "robot": self.robot_info,
                 "camera": self.camera.description, "ros": self.publisher is not None,
+                "live": {"available": type(self.camera) is not Camera, "viewers": self.frames.viewers,
+                         "fps": round(self.frames.measured_fps, 1), "size": list(self.frames.size)},
                 "grid": info, "last": self.last, "job": self.job}
 
     def localize(self, source: str, image: np.ndarray | None = None, K: np.ndarray | None = None) -> dict:
@@ -423,9 +543,41 @@ def make_handler(link: RobotLink):
             n = int(self.headers.get("Content-Length") or 0)
             return self.rfile.read(n) if n > 0 else b""
 
+        def _stream(self):
+            """multipart/x-mixed-replace MJPEG: each part is one JPEG, until the viewer goes away."""
+            hub = link.frames
+            if type(link.camera) is Camera:
+                return self._json(503, {"ok": False, "reason": "this robot link has no camera (start it with --camera)"})
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            hub.join()
+            seq = 0
+            try:
+                while True:
+                    seq, jpg = hub.next_frame(seq)
+                    if jpg is None:
+                        continue
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                     + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                hub.leave()
+
         def do_GET(self):
             u = urlparse(self.path)
             try:
+                if u.path == "/camera/stream":
+                    return self._stream()
+                if u.path == "/camera/snapshot.jpg":
+                    try:
+                        return self._send(200, link.frames.snapshot(), "image/jpeg")
+                    except RuntimeError as e:
+                        return self._json(503, {"ok": False, "reason": str(e)})
                 if u.path == "/status":
                     return self._json(200, link.status())
                 if u.path == "/maps":
@@ -434,6 +586,10 @@ def make_handler(link: RobotLink):
                     return self._json(200, {"map": link.active, "grid": link.localizer.grid if link.localizer else None})
                 if u.path == "/map/occupancy.png":
                     return self._send(200, link.occupancy_png(parse_qs(u.query).get("style", ["color"])[0]), "image/png")
+                if u.path == "/robot/model":
+                    if not link.robot_model:
+                        return self._json(404, {"ok": False, "reason": "no robot model configured: the app uses its Pioneer"})
+                    return self._send(200, link.robot_model.read_bytes(), "application/octet-stream")
                 if u.path == "/map/cloud.ply":
                     return self._send(200, link.cloud_ply(), "application/octet-stream")
                 if u.path == "/map/path.json":
@@ -493,7 +649,13 @@ def main() -> None:
     ap.add_argument("--captures", type=Path, default=ROOT / "captures", help="where uploads are unzipped")
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--name", default="Pioneer")
+    ap.add_argument("--name", default=None, help="robot name in the app (default: the model's, else Pioneer)")
+    ap.add_argument("--robot-urdf", type=Path, default=None, help="your humanoid's URDF: the app draws it")
+    ap.add_argument("--robot-forward", default="+x", choices=["+x", "-x", "+y", "-y"],
+                    help="URDF axis the robot faces (REP-103: +x; the Pioneer: -y)")
+    ap.add_argument("--robot-gait", type=Path, default=None,
+                    help="JSON naming the hip/knee/ankle/shoulder joints if they aren't auto-detected")
+    ap.add_argument("--robot-model", type=Path, default=None, help="an already converted .robot file")
     ap.add_argument("--camera", default="none",
                     help="none | realsense | ros:/camera/color/image_raw | file:img.jpg")
     ap.add_argument("--camera-K", default=None, help="fx,fy,cx,cy (for --camera file:...)")
@@ -522,9 +684,14 @@ def main() -> None:
         raise SystemExit(f"unknown --camera {a.camera}")
 
     pub = RosPublisher(node, base_from_camera_matrix(a.base_from_camera)) if a.ros else None
-    link = RobotLink(a.maps, a.name, cam, pub, a.captures)
+    model = a.robot_model
+    if a.robot_urdf:
+        model = prepare_robot_model(a.robot_urdf, a.maps / "_robots", a.robot_forward, a.robot_gait, a.name)
+    name = a.name or (_model_info(model)["name"] if model else None) or "Pioneer"
+    link = RobotLink(a.maps, name, cam, pub, a.captures, model)
     httpd = ThreadingHTTPServer((a.host, a.port), make_handler(link))
-    print(f"[robot_link] {a.name} on http://{a.host}:{a.port}  map={link.active}  camera={cam.description}"
+    print(f"[robot_link] {name} on http://{a.host}:{a.port}  map={link.active}  camera={cam.description}"
+          f"  model={'built-in Pioneer' if not model else link.robot_info['name'] + ' (' + str(link.robot_info['joints']) + ' joints)'}"
           f"  ros={'on' if pub else 'off'}")
     try:
         httpd.serve_forever()

@@ -118,6 +118,8 @@ struct RobotView: View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel(text: "Robot")
             VStack(spacing: 0) {
+                row("Model", robot.status?.robot.map { "\($0.name ?? "Custom") · \($0.joints ?? 0) joints" } ?? "Pioneer (built in)")
+                Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, 14)
                 row("Camera", robot.status?.camera ?? "—")
                 Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, 14)
                 row("ROS", robot.status?.ros == true ? "Publishing /initialpose" : "Off")

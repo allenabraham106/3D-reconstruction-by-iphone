@@ -225,14 +225,36 @@ In the app, open the **Robot** tab and connect to `http://<robot>:8770`; then us
 
 * **Localize robot**: the robot grabs a frame from its camera (the Pioneer's D455) and localizes it. With `--ros`, the fix is published as `/initialpose` (`PoseWithCovarianceStamped`, frame `map`), so nav2's AMCL or the robot's own SLAM can start, or restart, in the phone-built map. The camera pose also goes out on `/pioneer_home/camera_pose`.
 * **Localize this phone**: sends the phone's current camera view instead. You can test the whole loop with just a phone, before the robot is involved.
+* **Live camera**: the video button on Home opens Pioneer's view, the robot camera's live feed (`GET /camera/stream`, MJPEG at about 10 fps, at most 960 px wide; one capture thread shared by all viewers, which only runs while someone is watching). **Localize from this view** runs a fix on what it shows.
 * **Send a scan to the robot**: uploads a capture; the robot runs `run.py --arkit` and builds the relocalization map itself.
 * The 3D map shows both positions and headings (`/map/cloud.ply`, `/map/path.json`, `/map/topdown.png` feed it).
 
-HTTP API (for other clients): `GET /status`, `GET /maps`, `POST /maps/activate?name=`, `GET /map/info`, `GET /map/occupancy.png`, `POST /localize?source=robot|phone` (phone: JPEG body + `X-Fx X-Fy X-Cx X-Cy` headers), `POST /upload`.
+HTTP API (for other clients): `GET /status`, `GET /camera/stream`, `GET /camera/snapshot.jpg`, `GET /maps`, `POST /maps/activate?name=`, `GET /map/info`, `GET /map/occupancy.png`, `POST /localize?source=robot|phone` (phone: JPEG body + `X-Fx X-Fy X-Cx X-Cy` headers), `POST /upload`.
 
 Tested (`python tests/test_robot_link.py`, also in CI): views that were never keyframes, taken with a different camera, localize to **≤ 5 cm and ≤ 2°**, about 0.2 s each on a laptop CPU. Images from elsewhere are rejected with a reason. Through the full `robot_map.py` frame (synthetic 48-frame app capture), 4 new views landed within 0.5–4.4 cm, with correct height above the floor. Not yet tested on the real robot or with the D455. Localization needs texture: blank walls give too few landmarks, just as they do for SfM.
 
 <br clear="right">
+
+## Bring your own humanoid
+
+<img src="docs/images/pioneer-home/byo-humanoids.webp" width="560">
+
+*Two URDFs through the same converter, posed mid-stride by the app's walking logic: a leg-only humanoid (as another team's `--robot-urdf` would arrive) and the built-in Pioneer.*
+
+Pioneer Home isn't tied to the Pioneer. Any team can use it with their own robot: start the robot link with your URDF, and the app draws **your** robot (its CAD meshes, colours and name) on the 3D map, walking to each localization fix. No app update is needed.
+
+```bash
+python -m robot_link.server --maps out --robot-urdf ~/my_robot/urdf/my_robot.urdf --name "Atlas" \
+    --robot-forward +x --camera ros:/head_camera/color/image_raw --ros --base-from-camera "0.1 0 1.55 0 15 0"
+```
+
+* **What's needed**: a URDF with mesh visuals (STL / OBJ / DAE / GLB). It's converted once (`tools/urdf_to_app_model.py`: decimated to ~90k triangles, every joint kept) and cached under `out/_robots/`. The app downloads it from `GET /robot/model` on connect and caches it by content id.
+* **Facing**: `--robot-forward` is the URDF axis the robot faces. REP-103 robots face `+x` (the default); the Pioneer faces `-y`.
+* **Walking**: the app animates hip pitch, knee, ankle pitch, shoulder pitch and finger curl. They're found from common joint names (`left_hip_pitch_joint`, `l_knee`, `Knee_L`, `r_mcp`, ...); the converter prints what it found. If yours differ, pass `--robot-gait roles.json`, e.g. `{"knee": {"left": "LKneePitch", "right": "RKneePitch"}}`.
+* **Camera**: any RealSense, or any ROS 2 image topic with `camera_info`. Set `--base-from-camera` to where it's mounted, so `/initialpose` is the robot base, not the camera.
+* Without `--robot-urdf`, the app shows its built-in Pioneer.
+
+Tested with a different made-up humanoid (`tests/test_robot_link.py::test_bring_your_own_humanoid`: REP-103 joint names, facing +x). It converts, its walking joints are detected, and the server sends it to the app.
 
 ## Capture tips
 

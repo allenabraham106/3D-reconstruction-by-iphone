@@ -1,2 +1,6 @@
 numpy>=1.24
 pillow>=10
+# robot model converter (tools/urdf_to_app_model.py, robot_link --robot-urdf)
+trimesh>=4
+networkx>=3
+fast-simplification>=0.1
