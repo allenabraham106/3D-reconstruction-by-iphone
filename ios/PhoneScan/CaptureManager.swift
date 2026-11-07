@@ -86,6 +86,7 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
     private var pitchMax: Float = 0
     private var maxDistanceFromStart: Float = 0
     private var lastHUDUpdate: TimeInterval = 0
+    private var stopReason: String?
 
     override init() {
         super.init()
@@ -122,7 +123,8 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
         if hasLiDAR {
             config.frameSemantics.insert(.sceneDepth)
         }
-        if settings.saveMesh && supportsMesh {
+        // The live-mesh overlay needs reconstruction running even when the mesh isn't saved.
+        if supportsMesh && (settings.saveMesh || UserDefaults.standard.bool(forKey: CaptureSettings.Key.showMesh)) {
             config.sceneReconstruction = .mesh
         }
         return config
@@ -177,22 +179,27 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
         isFinishing = true
         UIApplication.shared.isIdleTimerDisabled = false
 
-        var mesh: MeshSnapshot?
-        if settings.saveMesh, let anchors = session.currentFrame?.anchors {
-            let meshAnchors = anchors.compactMap { $0 as? ARMeshAnchor }
-            if !meshAnchors.isEmpty {
-                mesh = MeshSnapshot(anchors: meshAnchors)
-            }
-        }
+        // iOS suspends the app seconds after Home/lock; finish writing before that.
+        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "Finish scan")
+        let meshAnchors = settings.saveMesh
+            ? (session.currentFrame?.anchors.compactMap { $0 as? ARMeshAnchor } ?? []) : []
 
-        writer.finish(mesh: mesh, distance: distanceAccum) { [weak self] result in
+        writer.finish(meshAnchors: meshAnchors, distance: distanceAccum) { [weak self] result in
             DispatchQueue.main.async {
+                defer { UIApplication.shared.endBackgroundTask(bgTask) }
                 guard let self else { return }
                 self.isFinishing = false
                 self.writer = nil
+                let reason = self.stopReason.map { "Stopped early (\($0)). " } ?? ""
+                self.stopReason = nil
                 switch result {
                 case .success(let url):
-                    self.message = "Saved \(self.frameCount) frames to \(url.lastPathComponent)"
+                    let saved = writer.writtenCount
+                    if let err = writer.writeError {
+                        self.message = reason + "Saved \(saved) of \(self.frameCount) frames to \(url.lastPathComponent). Some failed: \(err.localizedDescription)"
+                    } else {
+                        self.message = reason + "Saved \(saved) frames to \(url.lastPathComponent)"
+                    }
                     completion?(url)
                 case .failure(let error):
                     self.message = "Saving failed: \(error.localizedDescription)"
@@ -225,6 +232,12 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
         updateHUD(frame: frame, pose: pose, position: position)
 
         guard !isPaused, isKeyframe(pose: pose, time: frame.timestamp) else { return }
+
+        if writer.writeError != nil || !Self.hasFreeSpace() {
+            stopReason = writer.writeError == nil ? "iPhone storage almost full" : "frames stopped saving"
+            stopRecording()
+            return
+        }
 
         // Back-pressure: if encoding falls behind, skip rather than holding ARKit's buffers.
         guard writer.pendingCount < 3 else {
@@ -341,6 +354,14 @@ final class CaptureManager: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     // MARK: Helpers
+
+    /// Checked every keyframe; the lookup is a cheap statfs. 4K frames are several MB each.
+    private static func hasFreeSpace() -> Bool {
+        let values = try? URL(fileURLWithPath: NSHomeDirectory())
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        guard let free = values?.volumeAvailableCapacityForImportantUsage else { return true }
+        return free > 500_000_000
+    }
 
     private func isKeyframe(pose: simd_float4x4, time: TimeInterval) -> Bool {
         guard let last = lastKeyPose else { return true }

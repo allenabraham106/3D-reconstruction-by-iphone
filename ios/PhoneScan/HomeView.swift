@@ -1,4 +1,5 @@
 import SwiftUI
+import ARKit
 
 /// What Pioneer is doing, shared by Home and the Map screen.
 enum PioneerState { case offline, noMap, ready, localizing, localized, building, failed }
@@ -337,9 +338,18 @@ struct MapScreen: View {
     /// The camera only runs while scanning, so start it briefly, take one frame, and stop it again.
     private func localizePhone() {
         Task {
+            let started = ProcessInfo.processInfo.systemUptime
             capture.startSession()
-            try? await Task.sleep(for: .seconds(1.2))
-            let snap = capture.snapshotForLocalization()
+            // Wait for a fresh, tracked frame (not one left over from before the last pause);
+            // the first run also waits out the camera-permission prompt.
+            var snap: (jpeg: Data, fx: Float, fy: Float, cx: Float, cy: Float)?
+            for _ in 0..<50 {
+                try? await Task.sleep(for: .milliseconds(100))
+                if let f = capture.session.currentFrame, f.timestamp > started, case .normal = f.camera.trackingState {
+                    snap = capture.snapshotForLocalization()
+                    break
+                }
+            }
             capture.pauseSession()
             guard let snap else {
                 robot.error = "Couldn't get a camera frame. Check camera access in Settings."

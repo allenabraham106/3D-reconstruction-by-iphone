@@ -47,12 +47,24 @@ final class CaptureWriter {
         return pending
     }
 
+    /// Keyframes actually on disk, and the first write error (e.g. disk full). Any thread.
+    var writtenCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return written
+    }
+    var writeError: Error? {
+        lock.lock(); defer { lock.unlock() }
+        return firstError
+    }
+
     private let settings: CaptureSettings
     private let hasDepth: Bool
     private let deviceInfo: DeviceInfo
     private let queue = DispatchQueue(label: "PhoneScan.CaptureWriter", qos: .userInitiated)
     private let lock = NSLock()
     private var pending = 0
+    private var written = 0          // lock
+    private var firstError: Error?   // lock
     private let ciContext = CIContext()
     private let jsonl: FileHandle
     private var records: [FrameRecord] = []   // queue only
@@ -66,7 +78,14 @@ final class CaptureWriter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        directory = root.appendingPathComponent(formatter.string(from: Date()), isDirectory: true)
+        var dir = root.appendingPathComponent(formatter.string(from: Date()), isDirectory: true)
+        // Two scans started in the same second must not share (and truncate) one folder.
+        var n = 2
+        while FileManager.default.fileExists(atPath: dir.path) {
+            dir = root.appendingPathComponent("\(formatter.string(from: Date()))_\(n)", isDirectory: true)
+            n += 1
+        }
+        directory = dir
 
         self.settings = settings
         self.hasDepth = hasDepth
@@ -137,9 +156,11 @@ final class CaptureWriter {
                     for (id, p) in zip(featureIDs, featureXYZ) { featurePoints[id] = p }
                     var line = try JSONEncoder().encode(record)
                     line.append(0x0A)
-                    jsonl.write(line)
+                    try jsonl.write(contentsOf: line)
+                    lock.lock(); written += 1; lock.unlock()
                 } catch {
                     NSLog("PhoneScan: failed to write \(name): \(error)")
+                    lock.lock(); if firstError == nil { firstError = error }; lock.unlock()
                 }
             }
             lock.lock(); pending -= 1; lock.unlock()
@@ -147,8 +168,10 @@ final class CaptureWriter {
     }
 
     /// Waits for queued frames, then writes transforms.json, mesh.ply and metadata.json.
-    func finish(mesh: MeshSnapshot?, distance: Float = 0, completion: @escaping (Result<URL, Error>) -> Void) {
+    /// The mesh is merged here, off the main thread: a whole-house mesh takes seconds.
+    func finish(meshAnchors: [ARMeshAnchor], distance: Float = 0, completion: @escaping (Result<URL, Error>) -> Void) {
         queue.async { [self] in
+            let mesh = meshAnchors.isEmpty ? nil : MeshSnapshot(anchors: meshAnchors)
             do {
                 try jsonl.close()
                 let sorted = records.sorted { $0.file_path < $1.file_path }

@@ -98,7 +98,7 @@ If the project ever fails to open, regenerate it: `brew install xcodegen && cd i
 The camera axes follow OpenGL (+x right, +y up, looking down −z) and the world is gravity-aligned
 with +y up. That is nerfstudio's convention, so `transforms.json` works as-is. To get OpenCV/COLMAP
 axes, right-multiply by `diag(1, -1, -1, 1)`. The tools below do this for you. Intrinsics
-(`fl_x, fl_y, cx, cy`) are for the full-resolution JPEG; scale them by `256/1920` for depth.
+(`fl_x, fl_y, cx, cy`) are for the full-resolution JPEG; scale them by `256/w` (`256/1920`, or `256/3840` in 4K) for depth.
 
 ## Reconstruct
 
@@ -136,6 +136,7 @@ geometry. The tests check the coordinate conventions end to end.
 | `OnboardingArt.swift` | Animated onboarding illustrations and the swaying plushie mascot |
 | `CaptureLibrary.swift` | Capture list, zip (system archiver), HTTP upload |
 | `ContentView.swift`, `LibraryView.swift`, `SettingsView.swift` | UI |
+| `PrivacyInfo.xcprivacy` | Privacy manifest (UserDefaults, file timestamps, free disk space) for TestFlight / App Store |
 
 ## Credits
 

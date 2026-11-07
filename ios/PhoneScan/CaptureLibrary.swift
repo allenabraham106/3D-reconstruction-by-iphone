@@ -1,4 +1,19 @@
 import Foundation
+import UIKit
+
+/// Keeps the screen awake and asks iOS for background time while a long zip/upload runs,
+/// so auto-lock or a trip to the Home screen doesn't kill it halfway.
+@MainActor
+func withBackgroundTime<T>(_ name: String, _ body: () async throws -> T) async rethrows -> T {
+    let id = UIApplication.shared.beginBackgroundTask(withName: name)
+    let wasIdle = UIApplication.shared.isIdleTimerDisabled
+    UIApplication.shared.isIdleTimerDisabled = true
+    defer {
+        UIApplication.shared.isIdleTimerDisabled = wasIdle
+        UIApplication.shared.endBackgroundTask(id)
+    }
+    return try await body()
+}
 
 struct CaptureItem: Identifiable, Hashable {
     var id: URL { url }
@@ -26,17 +41,28 @@ final class CaptureLibrary: ObservableObject {
 
     nonisolated static var capturesDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let dir = docs.appendingPathComponent("Captures", isDirectory: true)
+        var dir = docs.appendingPathComponent("Captures", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Multi-GB scans would fill the user's iCloud backup.
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
         return dir
     }
 
+    /// Listing walks every file of every capture, so it runs off the main thread.
     func refresh() {
+        Task {
+            items = await Task.detached(priority: .userInitiated) { Self.scan() }.value
+        }
+    }
+
+    nonisolated private static func scan() -> [CaptureItem] {
         let fm = FileManager.default
         let dirs = (try? fm.contentsOfDirectory(at: Self.capturesDirectory,
                                                 includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey],
                                                 options: [.skipsHiddenFiles])) ?? []
-        items = dirs.compactMap { url -> CaptureItem? in
+        return dirs.compactMap { url -> CaptureItem? in
             let values = try? url.resourceValues(forKeys: [.creationDateKey, .isDirectoryKey])
             guard values?.isDirectory == true else { return nil }
             let images = ((try? fm.contentsOfDirectory(atPath: url.appendingPathComponent("images").path)) ?? [])
@@ -71,11 +97,16 @@ final class CaptureLibrary: ObservableObject {
         status = "Zipping \(item.name)…"
         defer { busyItem = nil }
         let source = item.url
-        let zip = try await Task.detached(priority: .userInitiated) {
-            try Self.zipDirectory(source)
-        }.value
-        status = nil
-        return zip
+        do {
+            let zip = try await withBackgroundTime("Zip scan") {
+                try await Task.detached(priority: .userInitiated) { try Self.zipDirectory(source) }.value
+            }
+            status = nil
+            return zip
+        } catch {
+            status = "Zip failed: \(error.localizedDescription)"
+            throw error
+        }
     }
 
     /// POSTs the zipped capture to `<server>/upload` (see tools/receive_server.py).
@@ -88,7 +119,7 @@ final class CaptureLibrary: ObservableObject {
         do {
             let zip = try await makeZip(item)
             busyItem = item.url
-            defer { busyItem = nil }
+            defer { busyItem = nil; try? FileManager.default.removeItem(at: zip) }
             let size = (try? FileManager.default.attributesOfItem(atPath: zip.path)[.size] as? Int64) ?? 0
             status = "Uploading \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))…"
 
@@ -98,8 +129,9 @@ final class CaptureLibrary: ObservableObject {
             request.setValue("application/zip", forHTTPHeaderField: "Content-Type")
             request.setValue(item.name, forHTTPHeaderField: "X-Capture-Name")
 
-            let (data, response) = try await URLSession.shared.upload(for: request, fromFile: zip)
-            try? FileManager.default.removeItem(at: zip)
+            let (data, response) = try await withBackgroundTime("Upload scan") {
+                try await URLSession.shared.upload(for: request, fromFile: zip)
+            }
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: data, encoding: .utf8) ?? ""
             status = code == 200 ? "Uploaded \(item.name) ✓" : "Server returned \(code): \(body.prefix(200))"
