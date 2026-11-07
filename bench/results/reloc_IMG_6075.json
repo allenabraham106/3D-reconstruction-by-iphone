@@ -1,0 +1,18 @@
+{
+ "cpu": {
+  "queries": 39,
+  "localized": 39,
+  "within_25cm_10deg": 39,
+  "median_pos_err_m": 0.003,
+  "median_yaw_err_deg": 0.42,
+  "median_inliers": 550
+ },
+ "vipe": {
+  "queries": 43,
+  "localized": 42,
+  "within_25cm_10deg": 42,
+  "median_pos_err_m": 0.002,
+  "median_yaw_err_deg": 0.68,
+  "median_inliers": 641
+ }
+}

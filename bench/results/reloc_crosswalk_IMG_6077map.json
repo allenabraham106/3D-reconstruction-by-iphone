@@ -1,0 +1,28 @@
+{
+ "IMG_6076": {
+  "queries": 127,
+  "localized": 56,
+  "pct": 44.1,
+  "height_median_m": 1.37,
+  "height_p5_p95": [
+   1.32,
+   1.42
+  ],
+  "step_0.6s_median_m": 0.21,
+  "steps_over_1m": 0,
+  "median_inliers": 61
+ },
+ "IMG_6070": {
+  "queries": 124,
+  "localized": 14,
+  "pct": 11.3,
+  "height_median_m": 1.17,
+  "height_p5_p95": [
+   1.15,
+   1.22
+  ],
+  "step_0.6s_median_m": 0.17,
+  "steps_over_1m": 0,
+  "median_inliers": 52
+ }
+}
