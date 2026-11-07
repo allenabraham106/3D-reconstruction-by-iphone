@@ -104,7 +104,13 @@ function parsePLY(buf) {
 }
 
 let points, cams = [], frustums, traj, liveFrustum, trail, center = new THREE.Vector3(), radius = 1;
-const pointMat = new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true });
+const qs = new URLSearchParams(location.search);
+const pointMat = new THREE.PointsMaterial({ size: +(qs.get("ps") || 2), sizeAttenuation: false, vertexColors: true });
+// ?cut=2.1 : dollhouse view, hide everything higher than 2.1 m above the floor (z-up maps only)
+const cutPlanes = qs.get("cut") ? [new THREE.Plane(new THREE.Vector3(0, -1, 0), +qs.get("cut"))] : [];
+renderer.localClippingEnabled = cutPlanes.length > 0;
+pointMat.clippingPlanes = cutPlanes;
+const preferPoints = qs.get("show") === "points";   // ?show=points : start on the point cloud
 
 // TSDF mesh (solid surface). When present it is shown instead of the point cloud.
 let mesh = null;
@@ -119,9 +125,11 @@ function setMesh(p) {
   g.setAttribute("position", new THREE.BufferAttribute(p.pos, 3));
   g.setAttribute("color", new THREE.BufferAttribute(p.col, 3));
   g.setIndex(new THREE.BufferAttribute(p.index, 1));
-  mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide,
+                                                          clippingPlanes: cutPlanes }));
   root.add(mesh);
-  if (points) points.visible = false;
+  if (preferPoints) { mesh.visible = false; meshBtn.textContent = "Mesh"; }
+  else if (points) points.visible = false;
   meshBtn.hidden = false;
   statusEl.textContent = `${(p.index.length / 3).toLocaleString()} triangles` + (cams.length ? ` · ${cams.length} cameras` : "");
 }
@@ -258,6 +266,34 @@ window.__renderFrame = (u, opts = {}) => {
   camera.lookAt(center);
   renderer.render(scene, camera);
   return true;
+};
+
+// window.__renderCam(i, opts): render exactly what recorded camera i saw (its pose and focal
+// length), overlays hidden, for side-by-side comparisons with the real photo. opts.fy and
+// opts.h override the camera's focal length / image height (pixels) if they differ.
+window.__renderCam = (i, opts = {}) => {
+  renderer.setAnimationLoop(null);
+  document.getElementById("hud").style.display = "none";
+  [frustums, traj, liveFrustum, trail].forEach(o => o && (o.visible = false));
+  const c = cams[Math.max(0, Math.min(cams.length - 1, i))];
+  const R = c.R;   // cam_from_world: rows are the camera's x, y, z axes in world coordinates
+  const m = new THREE.Matrix4().set(        // OpenCV camera -> three.js camera (y up, looks down -z)
+    R[0][0], -R[1][0], -R[2][0], c.C.x,
+    R[0][1], -R[1][1], -R[2][1], c.C.y,
+    R[0][2], -R[1][2], -R[2][2], c.C.z,
+    0, 0, 0, 1);
+  root.updateMatrixWorld(true);
+  camera.matrixAutoUpdate = false;
+  camera.matrix.copy(root.matrixWorld).multiply(m);
+  camera.matrixWorldNeedsUpdate = true;
+  camera.updateMatrixWorld(true);
+  const fy = opts.fy ?? c.fy, h = opts.h ?? c.h;
+  camera.fov = 2 * Math.atan(h / 2 / fy) * 180 / Math.PI;
+  camera.aspect = innerWidth / innerHeight;
+  camera.near = 0.05;
+  camera.updateProjectionMatrix();
+  renderer.render(scene, camera);
+  return c.name;
 };
 
 // ---------- loading: ?ply=..&cams=.. , defaults, file picker, drag-drop ----------

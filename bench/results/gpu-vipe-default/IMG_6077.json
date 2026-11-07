@@ -1,0 +1,47 @@
+{
+ "scale_source": "input (metric depth)",
+ "frames_total": 380,
+ "frames_with_camera": 380,
+ "frames_with_camera_pct": 100.0,
+ "max_jump_x_median_step": 2.7,
+ "camera_height_spread_m": 4.403,
+ "camera_height_median_m": 1.92,
+ "floor_spread_mm": 49.3,
+ "floor_support": 0.066,
+ "depth_pixels_kept_median_pct": 99.2,
+ "mesh_triangles": 4813380,
+ "map_points": 2185568,
+ "floor_cells_seen": 4660,
+ "floor_cells_walked_only": 5021,
+ "obstacle_cells": 14276,
+ "false_obstacles_cleared_by_walk": 2338,
+ "floor_seen_pct": 48.1,
+ "scene_extent_m": [
+  12.5,
+  12.11,
+  8.03
+ ],
+ "glass_walls": 0,
+ "warnings": [
+  "camera heights spread over 4.40 m (p5-p95): the map is probably bent or tilted (camera-path drift), so walls and floor may not line up. Re-run, or capture with the app (ARKit) for drift-free poses."
+ ],
+ "timings_s": {
+  "frames": 18,
+  "vipe": 400,
+  "dense": 61,
+  "total": 479
+ },
+ "scan": "IMG_6077",
+ "description": "apartment, latest walk, 115 s",
+ "pipeline": "gpu (ViPE default)",
+ "wall_clock_s": 479.7,
+ "machine": {
+  "python": "3.11.18",
+  "os": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "cpus": 16,
+  "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+  "ram_gb": 65.7,
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, 16303 MiB"
+ },
+ "date": "2026-11-07 00:36"
+}

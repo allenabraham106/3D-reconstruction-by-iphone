@@ -136,6 +136,8 @@ def compute_metrics(out: Path, ref=None, frames_total=None, continuous=True):
     # coverage: how many video frames got a camera
     if frames_total is None:
         frames_total = info.get("frames_total")
+    elif info.get("every", 1) > 1:  # GPU path fuses every k-th frame: count against those
+        frames_total = -(-frames_total // info["every"])
     if frames_total is None and (out / "frames").is_dir():
         frames_total = len(list((out / "frames").glob("*.jpg")))
     m["frames_total"] = frames_total
@@ -220,7 +222,8 @@ def run_scan(scan, data: Path, pipeline, work: Path, log):
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
                             "-vf", "scale=-2:720,format=yuv420p", "-r", "10", "-c:v", "libx264", str(mp4)], check=True)
             src = mp4
-        out = ROOT / "out_vipe" / name
+        vipe_out = Path(os.environ.get("OUT_VIPE", ROOT / "out_vipe"))
+        out = vipe_out / name
         cmd = ["bash", str(ROOT / "gpu" / "run_gpu.sh"), str(src)]
     with open(log, "w") as f:
         r = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=ROOT)
@@ -240,6 +243,9 @@ def cmd_run(a):
     data = Path(a.data).expanduser()
     work = Path(a.work).expanduser() if a.work else ROOT / "bench" / "work" / a.label
     work.mkdir(parents=True, exist_ok=True)
+    if a.pipeline == "gpu":  # ViPE pipeline + its own output folder, so variants don't collide
+        os.environ["VIPE_PIPELINE"] = a.vipe_pipeline
+        os.environ.setdefault("OUT_VIPE", str(ROOT / "out_vipe" / a.vipe_pipeline))
     machine = machine_info()
     for scan in load_suite():
         if a.scans and scan["name"] not in a.scans:
@@ -251,7 +257,8 @@ def cmd_run(a):
         n_photos = (len([p for p in src.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
                     if src.is_dir() else None)
         m = compute_metrics(out, ref, n_photos, continuous=src.is_file())
-        m.update(scan=scan["name"], description=scan.get("description"), pipeline=a.pipeline,
+        m.update(scan=scan["name"], description=scan.get("description"),
+                 pipeline=a.pipeline if a.pipeline == "cpu" else f"gpu (ViPE {a.vipe_pipeline})",
                  wall_clock_s=wall, machine=machine, date=time.strftime("%Y-%m-%d %H:%M"))
         save(a.label, scan["name"], m)
         print(f"[bench] {scan['name']}: done in {wall/60:.1f} min", flush=True)
@@ -384,6 +391,8 @@ def main():
     r.add_argument("--label", required=True)
     r.add_argument("--data", required=True, help="folder with the suite's scans (bench/README.md)")
     r.add_argument("--pipeline", choices=["cpu", "gpu"], default="cpu")
+    r.add_argument("--vipe-pipeline", default="default",
+                   help="gpu only: ViPE pipeline (default, dav3, static_vda, no_vda, ...)")
     r.add_argument("--scans", nargs="*", help="only these scans (names from bench/suite.json)")
     r.add_argument("--work", help="where outputs go (default bench/work/<label>)")
     r.set_defaults(fn=cmd_run)
