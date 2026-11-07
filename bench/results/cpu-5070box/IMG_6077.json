@@ -1,0 +1,47 @@
+{
+ "scale_source": "phone_height=1.4m",
+ "frames_total": 274,
+ "frames_with_camera": 268,
+ "frames_with_camera_pct": 97.8,
+ "max_jump_x_median_step": 4.7,
+ "camera_height_spread_m": 0.408,
+ "camera_height_median_m": 1.4,
+ "floor_spread_mm": 30.5,
+ "floor_support": 0.178,
+ "depth_pixels_kept_median_pct": 22.8,
+ "mesh_triangles": 990092,
+ "map_points": 432592,
+ "floor_cells_seen": 6690,
+ "floor_cells_walked_only": 198,
+ "obstacle_cells": 6672,
+ "false_obstacles_cleared_by_walk": 132,
+ "floor_seen_pct": 97.1,
+ "scene_extent_m": [
+  9.65,
+  9.12,
+  2.14
+ ],
+ "glass_walls": 0,
+ "warnings": [],
+ "timings_s": {
+  "frames": 19.3,
+  "sfm": 106.3,
+  "dense": 521.6,
+  "robot_map": 7.1,
+  "viewer": 0.0,
+  "total": 654.3
+ },
+ "scan": "IMG_6077",
+ "description": "apartment, latest walk, 115 s",
+ "pipeline": "cpu",
+ "wall_clock_s": 654.7,
+ "machine": {
+  "python": "3.11.18",
+  "os": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "cpus": 16,
+  "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+  "ram_gb": 65.7,
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, 16303 MiB"
+ },
+ "date": "2026-11-07 04:13"
+}

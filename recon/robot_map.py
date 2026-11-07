@@ -212,6 +212,17 @@ def find_glass_walls(Pw, Cw, z_band=(0.2, 2.2), thr=0.05, min_inliers=200, min_l
     return walls
 
 
+def to_map(X, transform):
+    """Points in the reconstruction's frame -> the robot map's metric, z-up frame
+    (transform: robot/map_transform.json as a dict)."""
+    R = np.array(transform["R"])
+    Y = X @ R.T
+    Y[:, 2] -= transform["z0"]
+    Y *= transform["scale"]
+    Y[:, :2] -= np.array(transform["xy0"])
+    return Y
+
+
 def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
           robot_height=1.8, step_height=0.08, walk_radius=0.3, infer_gap=0.5, carve_radius=0.2,
           below_floor=0.05, obst_ratio=0.5, reach_radius=3.5, detect_glass=True,
@@ -271,6 +282,10 @@ def build(ply, cameras_json, out, phone_height=1.4, metric=False, cell=0.05,
     xy0 = np.median(Pw[:, :2], 0)
     Pw[:, :2] -= xy0
     Cw[:, :2] -= xy0
+    # the transform itself, so other clouds in the input frame can be brought into the map:
+    # X_map = scale * (R @ X - [0, 0, z0]) - [xy0, 0]   (to_map() below)
+    (out / "map_transform.json").write_text(json.dumps(
+        {"R": R.tolist(), "z0": float(z0), "scale": float(scale), "xy0": xy0.tolist()}))
     # same metric, z-up transform for the TSDF mesh, if the dense step produced one
     for src_name, dst_name in (("mesh.ply", "mesh_metric.ply"),
                                ("mesh_inferred.ply", "mesh_inferred_metric.ply")):
