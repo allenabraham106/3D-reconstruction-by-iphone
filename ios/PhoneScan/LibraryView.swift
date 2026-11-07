@@ -106,7 +106,7 @@ struct LibraryView: View {
 
     private func empty(_ title: String, _ body: String) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: "cube.transparent").font(.system(size: 28, weight: .ultraLight))
+            PlushieMascot(height: 120).padding(.bottom, 6)
             Text(title).monoLabel(11)
             Text(body).font(.footnote).foregroundStyle(Theme.ink2).multilineTextAlignment(.center)
         }

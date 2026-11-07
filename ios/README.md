@@ -41,7 +41,7 @@ Full documentation: [`docs/PHONESCAN.md`](../docs/PHONESCAN.md).
 
 **Robot tab**: connect to `robot_link.server` on the robot; Home then localizes Pioneer (or this phone) and shows it on the 3D map. See "Robot link" in the main README.
 
-The look: white surfaces, ink text, hairline borders, small monospace captions and colour only for state (green = connected, WATonomous blue `#1E5E96` = what Pioneer is doing), all in [`PhoneScan/Theme.swift`](PhoneScan/Theme.swift). The icon is the Pioneer plushie's helmet.
+The look: white surfaces, ink text, hairline borders, small monospace captions and colour only for state (green = connected, WATonomous blue `#1E5E96` = what Pioneer is doing), all in [`PhoneScan/Theme.swift`](PhoneScan/Theme.swift). The icon and the mascot (onboarding, the empty Scans screen, Settings) are the team's Pioneer plushie, rendered in Blender (blender-harness) on a pale mint wash.
 
 ## Install on your iPhone
 
@@ -135,6 +135,7 @@ geometry. The tests check the coordinate conventions end to end.
 | `MeshSnapshot.swift` | Merges ARMeshAnchors into one world-frame mesh, binary PLY export |
 | `CaptureLibrary.swift` | Capture list, zip (system archiver), HTTP upload |
 | `ContentView.swift`, `LibraryView.swift`, `SettingsView.swift` | UI |
+| `OnboardingArt.swift` | Animated onboarding illustrations and the swaying plushie mascot |
 
 ## Credits
 
