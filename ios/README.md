@@ -133,9 +133,9 @@ geometry. The tests check the coordinate conventions end to end.
 | `CaptureManager.swift` | ARSession config (LiDAR depth, mesh, optional 4K), tracking status, keyframe selection |
 | `CaptureWriter.swift` | Copies frames off ARKit's buffers, writes JPEG/PNG on a background queue, writes transforms.json |
 | `MeshSnapshot.swift` | Merges ARMeshAnchors into one world-frame mesh, binary PLY export |
+| `OnboardingArt.swift` | Animated onboarding illustrations and the swaying plushie mascot |
 | `CaptureLibrary.swift` | Capture list, zip (system archiver), HTTP upload |
 | `ContentView.swift`, `LibraryView.swift`, `SettingsView.swift` | UI |
-| `OnboardingArt.swift` | Animated onboarding illustrations and the swaying plushie mascot |
 
 ## Credits
 
