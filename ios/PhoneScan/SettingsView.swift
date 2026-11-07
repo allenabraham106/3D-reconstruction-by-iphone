@@ -29,6 +29,20 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    HStack(spacing: 14) {
+                        PlushieMascot(height: 72)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Pioneer Home").font(.headline).foregroundStyle(Theme.ink)
+                            Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+                                .font(Theme.mono(11)).foregroundStyle(Theme.ink3)
+                            Text("Scans your home so Pioneer can find its way around.")
+                                .font(.footnote).foregroundStyle(Theme.ink2)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section {
                     Picker("Appearance", selection: $appearance) {
                         ForEach(Appearance.allCases) { Text($0.rawValue).tag($0.rawValue) }
                     }
