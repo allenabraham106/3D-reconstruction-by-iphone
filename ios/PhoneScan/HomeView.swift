@@ -81,8 +81,6 @@ struct HomeView: View {
 
     @State private var showCapture = false
     @State private var showSendPicker = false
-    @State private var command: MapCommand?
-    @State private var topView = false
     @State private var showLive = false
     @State private var showMap = false
 
@@ -110,19 +108,6 @@ struct HomeView: View {
         .background(Theme.paper)
         .fullScreenCover(isPresented: $showCapture) { CaptureView() }
         .fullScreenCover(isPresented: $showLive) { LiveFeedView() }
-        .confirmationDialog("Send a scan to Pioneer", isPresented: $showSendPicker, titleVisibility: .visible) {
-            ForEach(Array(library.items.filter(\.isComplete).prefix(8))) { item in
-                Button("\(item.date.formatted(date: .abbreviated, time: .shortened)) · \(item.frameCount) frames") {
-                    Task {
-                        if let zip = try? await library.makeZip(item) {
-                            await robot.sendScan(robotURL, zip: zip, name: item.name)
-                        }
-                    }
-                }
-            }
-        } message: {
-            Text("Pioneer rebuilds it in 3D and makes a map it can find itself in. Takes a few minutes.")
-        }
         .fullScreenCover(isPresented: $showMap) { MapScreen() }
         .sendScanPicker(isPresented: $showSendPicker)
         .task {
@@ -170,6 +155,10 @@ struct HomeView: View {
         VStack(spacing: 0) {
             ListRow(symbol: "map", title: "Map", subtitle: mapSubtitle) { showMap = true }
             Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, 56)
+            ListRow(symbol: "video", title: "Live camera", subtitle: liveSubtitle) { showLive = true }
+                .disabled(!liveAvailable)
+                .opacity(liveAvailable ? 1 : 0.5)
+            Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, 56)
             ListRow(symbol: "viewfinder", title: "Scans", subtitle: scansSubtitle) { openScansTab() }
         }
         .paperCard(18)
@@ -178,6 +167,13 @@ struct HomeView: View {
     private var mapSubtitle: String {
         if let m = robot.status?.map { return "\(m) · on \(robot.pioneerName)" }
         return robot.isConnected ? "No map on \(robot.pioneerName) yet" : "Connect to see Pioneer's map"
+    }
+
+    private var liveAvailable: Bool { robot.status?.live?.available == true }
+
+    private var liveSubtitle: String {
+        if liveAvailable { return "What \(robot.pioneerName)'s camera sees, live" }
+        return robot.isConnected ? "No camera running on \(robot.pioneerName)" : "Connect to watch \(robot.pioneerName)'s camera"
     }
 
     private var scansSubtitle: String {
@@ -199,6 +195,7 @@ struct MapScreen: View {
     @State private var command: MapCommand?
     @State private var showCapture = false
     @State private var showSendPicker = false
+    @State private var showLive = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -213,6 +210,7 @@ struct MapScreen: View {
         .background(Theme.paper)
         .onChange(of: mode) { _, m in command = MapCommand(kind: m == .top ? .topDown : .recenter) }
         .fullScreenCover(isPresented: $showCapture) { CaptureView() }
+        .fullScreenCover(isPresented: $showLive) { LiveFeedView() }
         .sendScanPicker(isPresented: $showSendPicker)
     }
 
@@ -242,8 +240,6 @@ struct MapScreen: View {
                 Map3DView(cloud: cloud, path: robot.scanPath,
                           robot: robot.status?.last["robot"], phone: robot.status?.last["phone"],
                           command: command, robotModel: robot.robotModel)
-                    .padding(.bottom, 200)
-                          command: command)
                     .padding(.bottom, 260)
             } else if let grid = robot.status?.grid, let img = robot.topdownImage ?? robot.mapImage {
                 FloorMap(image: img, grid: grid, robot: robot.status?.last["robot"], phone: robot.status?.last["phone"])
@@ -275,8 +271,6 @@ struct MapScreen: View {
             RoundButton(symbol: "video", label: "Pioneer's live camera") { showLive = true }
                 .disabled(robot.status?.live?.available != true)
                 .opacity(robot.status?.live?.available == true ? 1 : 0.4)
-            RoundButton(symbol: "iphone.gen3", label: "Localize this phone") { localizePhone() }
-                .disabled(!canLocalize)
             RoundButton(symbol: "iphone", label: "Localize this phone") { localizePhone() }
                 .disabled(!robot.canLocalize)
         }
