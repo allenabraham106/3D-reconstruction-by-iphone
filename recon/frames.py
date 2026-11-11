@@ -51,6 +51,7 @@ def extract(video: Path, out_dir: Path, target_frames=300, max_side=1280, candid
     sharp = np.array(sharp)
     out_dir.mkdir(parents=True, exist_ok=True)
     n, dropped, last = 0, 0, None
+    times = {}  # keyframe -> seconds into the video (gpu/hybrid.py pairs them with ViPE frames)
     for s in range(0, len(cands), candidates_per_pick):
         w = sharp[s:s + candidates_per_pick]
         best = s + int(np.argmax(w))
@@ -62,8 +63,11 @@ def extract(video: Path, out_dir: Path, target_frames=300, max_side=1280, candid
             continue
         last = small.astype(np.float32)
         shutil.copy(cands[best], out_dir / f"frame_{n:05d}.jpg")
+        times[f"frame_{n:05d}.jpg"] = round(best / sample_fps, 4)  # ffmpeg fps: k-th out = k/fps
         n += 1
     shutil.rmtree(tmp)
+    (out_dir.parent / "frame_times.json").write_text(json.dumps(
+        {"sample_fps": sample_fps, "duration": dur, "times": times}))
     print(f"[frames] {video.name}: {info.get('codec_name')} {info['width']}x{info['height']} "
           f"{dur:.1f}s hdr={hdr} -> {n} keyframes ({dropped} near-duplicates dropped) in {out_dir}")
     return n
