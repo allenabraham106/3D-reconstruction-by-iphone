@@ -218,7 +218,7 @@ def main():
     cams = [{"name": v.name, "R": v.R.tolist(), "t": v.t.tolist(), "C": v.C.tolist(),
              "fx": float(v.K[0, 0]), "fy": float(v.K[1, 1]), "w": v.w, "h": v.h} for v in views]
     (dense / "cameras.json").write_text(json.dumps(cams))
-    n_frames = len(list((run / "frames").glob("*.jpg")))
+    n_frames = len([p for p in (run / "frames").iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
     (dense / "bench_info.json").write_text(json.dumps({
         "frames_total": n_frames, "depth_pixels_kept_median_pct": round(kept, 1),
         "hybrid": {"frames_fused": len(views), "metres_per_sfm_unit": m_per_unit,
