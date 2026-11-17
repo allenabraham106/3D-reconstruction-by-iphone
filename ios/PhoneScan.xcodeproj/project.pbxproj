@@ -7,11 +7,27 @@
 	objects = {
 
 /* Begin PBXFileReference section */
+		5C0A00000000000000000020 /* PhoneScanUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PhoneScanUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C0A00000000000000000001 /* PhoneScan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PhoneScan.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C0A0000000000000000000E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXContainerItemProxy section */
+		5C0A00000000000000000028 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5C0A00000000000000000009 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5C0A00000000000000000006;
+			remoteInfo = PhoneScan;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		5C0A00000000000000000021 /* PhoneScanUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PhoneScanUITests;
+			sourceTree = "<group>";
+		};
 		5C0A00000000000000000002 /* PhoneScan */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PhoneScan;
@@ -20,6 +36,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		5C0A00000000000000000022 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		5C0A00000000000000000003 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -35,6 +58,7 @@
 			children = (
 				5C0A0000000000000000000E /* Info.plist */,
 				5C0A00000000000000000002 /* PhoneScan */,
+				5C0A00000000000000000021 /* PhoneScanUITests */,
 				5C0A00000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,6 +67,7 @@
 			isa = PBXGroup;
 			children = (
 				5C0A00000000000000000001 /* PhoneScan.app */,
+				5C0A00000000000000000020 /* PhoneScanUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -50,6 +75,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		5C0A00000000000000000025 /* PhoneScanUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5C0A0000000000000000002A /* Build configuration list for PBXNativeTarget "PhoneScanUITests" */;
+			buildPhases = (
+				5C0A00000000000000000023 /* Sources */,
+				5C0A00000000000000000022 /* Frameworks */,
+				5C0A00000000000000000024 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5C0A00000000000000000029 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5C0A00000000000000000021 /* PhoneScanUITests */,
+			);
+			name = PhoneScanUITests;
+			packageProductDependencies = (
+			);
+			productName = PhoneScanUITests;
+			productReference = 5C0A00000000000000000020 /* PhoneScanUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		5C0A00000000000000000006 /* PhoneScan */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5C0A0000000000000000000B /* Build configuration list for PBXNativeTarget "PhoneScan" */;
@@ -85,6 +133,10 @@
 					5C0A00000000000000000006 = {
 						CreatedOnToolsVersion = 16.0;
 					};
+					5C0A00000000000000000025 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 5C0A00000000000000000006;
+					};
 				};
 			};
 			buildConfigurationList = 5C0A0000000000000000000A /* Build configuration list for PBXProject "PhoneScan" */;
@@ -102,11 +154,19 @@
 			projectRoot = "";
 			targets = (
 				5C0A00000000000000000006 /* PhoneScan */,
+				5C0A00000000000000000025 /* PhoneScanUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		5C0A00000000000000000024 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		5C0A00000000000000000008 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -117,6 +177,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		5C0A00000000000000000023 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		5C0A00000000000000000007 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -126,7 +193,45 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		5C0A00000000000000000029 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5C0A00000000000000000006 /* PhoneScan */;
+			targetProxy = 5C0A00000000000000000028 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		5C0A00000000000000000026 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.allenabraham.PhoneScanUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = PhoneScan;
+			};
+			name = Debug;
+		};
+		5C0A00000000000000000027 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.allenabraham.PhoneScanUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = PhoneScan;
+			};
+			name = Release;
+		};
 		5C0A0000000000000000000C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -251,6 +356,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		5C0A0000000000000000002A /* Build configuration list for PBXNativeTarget "PhoneScanUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5C0A00000000000000000026 /* Debug */,
+				5C0A00000000000000000027 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		5C0A0000000000000000000A /* Build configuration list for PBXProject "PhoneScan" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
