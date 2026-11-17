@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splat Viewer</title>
+<style>
+  html,body { margin:0; height:100%; background:#1d1e22; overflow:hidden; }
+  #hud { position:fixed; left:16px; top:16px; color:#9a9ba3; font:12px -apple-system,sans-serif; }
+</style>
+</head>
+<body>
+<div id="hud">Gaussian splat · drag to orbit, scroll to zoom, right-drag to pan · ?ply=&lt;file&gt;</div>
+<!-- gsplat's splat.ply (standard 3DGS layout) in SfM's frame: OpenCV camera axes, y down. Serve this folder over
+     http (python3 -m http.server --bind 127.0.0.1) with splat.ply next to this page, or pass ?ply=<url>. -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+} }
+</script>
+<script type="module">
+import * as GaussianSplats3D from "@mkkellogg/gaussian-splats-3d";
+const ply = new URLSearchParams(location.search).get("ply") || "splat.ply";
+const viewer = new GaussianSplats3D.Viewer({ cameraUp: [0, -1, 0], initialCameraPosition: [0, 0, -3],
+                                             initialCameraLookAt: [0, 0, 1], sharedMemoryForWorkers: false });
+await viewer.addSplatScene(ply, { splatAlphaRemovalThreshold: 5, showLoadingUI: true });
+viewer.start();
+</script>
+</body>
+</html>

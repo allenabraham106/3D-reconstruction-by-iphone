@@ -1,4 +1,4 @@
-"""Stage 2: camera poses + intrinsics via COLMAP incremental SfM (CPU).
+"""Stage 2: camera poses + intrinsics via COLMAP incremental SfM (SIFT + matching on CUDA when pycolmap is the pycolmap-cuda12 build, else CPU).
 
 Stands in for ViPE's bundle-adjusted SLAM: sequential matching suits video,
 and one shared camera matches a single phone lens.
@@ -235,12 +235,12 @@ def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600
     ext.sift.max_num_features = max_features
     pycolmap.extract_features(db, image_dir, camera_mode=pycolmap.CameraMode.SINGLE,
                               reader_options=reader, extraction_options=ext,
-                              device=pycolmap.Device.cpu)
+                              device=pycolmap.Device.auto)
     print(f"[sfm] features {time.time()-t:.0f}s")
     pairing = pycolmap.SequentialPairingOptions()
     pairing.overlap = overlap
     pairing.quadratic_overlap = True
-    pycolmap.match_sequential(db, pairing_options=pairing, device=pycolmap.Device.cpu)
+    pycolmap.match_sequential(db, pairing_options=pairing, device=pycolmap.Device.auto)
     use_priors = False
     if position_priors:
         n = write_position_priors(db, position_priors)
@@ -248,7 +248,7 @@ def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600
         sp.ignore_z = False
         sp.max_num_neighbors = 30
         sp.max_distance = 2.0  # metres
-        pycolmap.match_spatial(db, pairing_options=sp, device=pycolmap.Device.cpu)
+        pycolmap.match_spatial(db, pairing_options=sp, device=pycolmap.Device.auto)
         use_priors = n > 0
         print(f"[sfm] {n} ARKit position priors; spatial matching added")
     print(f"[sfm] matching {time.time()-t:.0f}s")
@@ -269,17 +269,17 @@ def run_sfm(image_dir: Path, work: Path, overlap: int = 15, max_size: int = 1600
             lst.write_text("".join(f"{a} {b}\n" for a, b in pairs))
             po = pycolmap.ImportedPairingOptions()
             po.match_list_path = lst
-            pycolmap.match_image_pairs(db, pairing_options=po, device=pycolmap.Device.cpu)
+            pycolmap.match_image_pairs(db, pairing_options=po, device=pycolmap.Device.auto)
         else:
             print("[sfm] incomplete -> adding exhaustive matching for loop closure")
-            pycolmap.match_exhaustive(db, device=pycolmap.Device.cpu)
+            pycolmap.match_exhaustive(db, device=pycolmap.Device.auto)
         rec2 = _map(db, image_dir, work / "sparse_exhaustive", use_priors, ba_ratio)
         if rec2 is not None and (rec is None or rec2.num_reg_images() > rec.num_reg_images()):
             rec = rec2
         if len(pairs) < 0.5 * n_exh and rec.num_reg_images() < 0.9 * n_images:
             # bridge pairs weren't enough: fall back to matching everything
             print(f"[sfm] still {rec.num_reg_images()}/{n_images} -> exhaustive matching")
-            pycolmap.match_exhaustive(db, device=pycolmap.Device.cpu)
+            pycolmap.match_exhaustive(db, device=pycolmap.Device.auto)
             rec3 = _map(db, image_dir, work / "sparse_exhaustive_full", use_priors, ba_ratio)
             if rec3 is not None and rec3.num_reg_images() > rec.num_reg_images():
                 rec = rec3

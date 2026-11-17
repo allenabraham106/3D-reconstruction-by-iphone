@@ -28,20 +28,15 @@ def extract(video: Path, out_dir: Path, target_frames=300, max_side=1280, candid
     hdr = info.get("color_transfer") in ("arib-std-b67", "smpte2084")
     dur = max(info["duration"], 1e-3)
     sample_fps = min(30.0, target_frames * candidates_per_pick / dur)
-    vf = [f"fps={sample_fps:.4f}"]
-    if hdr:
-        # HLG/PQ 10-bit -> SDR BT.709 so features/colours look normal
+    # downscale before tone-mapping: the float tone-map then runs on ~2x fewer pixels (IMG_1429: 46 s -> 24 s)
+    vf = [f"fps={sample_fps:.4f}",
+          f"scale='if(gt(iw,ih),min({max_side},iw),-2)':'if(gt(iw,ih),-2,min({max_side},ih))'"]
+    if hdr:  # HLG/PQ 10-bit -> SDR BT.709 so features/colours look normal (needs ffmpeg with zimg)
         vf.append("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
                   "tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
-    vf.append(f"scale='if(gt(iw,ih),min({max_side},iw),-2)':'if(gt(iw,ih),-2,min({max_side},ih))'")
     tmp = Path(tempfile.mkdtemp(prefix="frames_"))
-    cmd = ["ffmpeg", "-v", "error", "-i", str(video), "-vf", ",".join(vf), "-q:v", "2",
-           str(tmp / "c_%06d.jpg")]
-    r = subprocess.run(cmd)
-    if r.returncode != 0 and hdr:  # ffmpeg without zimg: fall back to plain conversion
-        cmd = ["ffmpeg", "-v", "error", "-i", str(video), "-vf",
-               f"fps={sample_fps:.4f},format=yuv420p," + vf[-1], "-q:v", "2", str(tmp / "c_%06d.jpg")]
-        subprocess.run(cmd, check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vf", ",".join(vf), "-q:v", "2",
+                    str(tmp / "c_%06d.jpg")], check=True)
     cands = sorted(tmp.glob("c_*.jpg"))
     sharp = []
     for c in cands:
