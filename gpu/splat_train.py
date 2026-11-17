@@ -154,6 +154,9 @@ def main():
     ap.add_argument("--pose-opt", type=int, default=0, help="1: refine each training camera's pose (A/B on the office: -0.7 dB)")
     ap.add_argument("--mask-people", type=int, default=1,
                     help="1: leave pixels ViPE segmented as people out of training (people move: ghosts)")
+    ap.add_argument("--aa", type=int, default=0, help="1: antialiased rasterization (Mip-Splatting style 2D filter)")
+    ap.add_argument("--frames-dir", type=Path, default=None,
+                    help="read frames/frame_{i:05d}.jpg instead of decoding the video (gpu/cpu_to_vipe.py output)")
     ap.add_argument("--drop-blurry", type=float, default=0.0,
                     help="leave the blurriest share of frames (motion blur) out of training")
     a = ap.parse_args()
@@ -169,8 +172,13 @@ def main():
 
     c2w, K4, depth_names = load_vipe(a.vipe_dir, a.name)
     ids = sorted(set(c2w) & set(K4))
-    imgs = decode_frames(a.video, a.fps, a.max_side, len(ids))
-    ids = [i for i in ids if i < len(imgs)]
+    if a.frames_dir:  # keyframes on disk (the CPU pipeline's frames/, via gpu/cpu_to_vipe.py)
+        import cv2
+        imgs = np.stack([cv2.cvtColor(cv2.imread(str(a.frames_dir / f"frame_{i:05d}.jpg")), cv2.COLOR_BGR2RGB)
+                         for i in ids])
+    else:
+        imgs = decode_frames(a.video, a.fps, a.max_side, len(ids))
+        ids = [i for i in ids if i < len(imgs)]
     H, W = imgs.shape[1:3]
     # ViPE resolution from its depth maps
     with zipfile.ZipFile(a.vipe_dir / "depth" / f"{a.name}.zip") as z:
@@ -313,7 +321,7 @@ def main():
         out, alpha, info = rasterization(
             params["means"], params["quats"], torch.exp(params["scales"]), torch.sigmoid(params["opacities"]),
             colors, refined(k_list) if expo_from is None else viewmats[k_list], Ks[k_list], W, H, sh_degree=sh_deg, render_mode="RGB+ED",
-            packed=False, near_plane=0.05)
+            packed=False, near_plane=0.05, rasterize_mode="antialiased" if a.aa else "classic")
         rgb, dep = out[..., :3], out[..., 3]
         e = k_list if expo_from is None else expo_from
         rgb = torch.einsum("bij,bhwj->bhwi", expo_A[e], rgb) + expo_b[e][:, None, None, :]
@@ -366,7 +374,9 @@ def main():
     # evaluation on held-out frames (exposure from the nearest training frame)
     import cv2
     (a.out / "renders").mkdir(exist_ok=True)
-    psnrs, ssims, psnrs_static = [], [], []
+    psnrs, ssims, psnrs_static, lpipss = [], [], [], []
+    import lpips
+    lp = lpips.LPIPS(net="alex", verbose=False).to(dev)
     with torch.no_grad():
         for j, k in enumerate(test):
             near = min(train, key=lambda t: abs(t - k))
@@ -378,6 +388,7 @@ def main():
             if sm is not None:
                 psnrs_static.append(-10 * math.log10(((rgb - gt) ** 2)[0][sm].mean().item()))
             ssims.append(ssim(rgb.permute(0, 3, 1, 2), gt.permute(0, 3, 1, 2)).item())
+            lpipss.append(lp(rgb.permute(0, 3, 1, 2) * 2 - 1, gt.permute(0, 3, 1, 2) * 2 - 1).item())
             if j % max(1, len(test) // 8) == 0:
                 pair = np.concatenate([(gt[0].cpu().numpy() * 255), (rgb[0].cpu().numpy() * 255)], 1)
                 cv2.imwrite(str(a.out / "renders" / f"test_{k:04d}.jpg"), pair[..., ::-1].astype(np.uint8),
@@ -385,6 +396,7 @@ def main():
     stats = {"frames": len(ids), "train_frames": len(train), "test_frames": len(test),
              "resolution": [W, H], "steps": a.steps, "gaussians": len(params["means"]),
              "psnr_test": round(float(np.mean(psnrs)), 2), "ssim_test": round(float(np.mean(ssims)), 4),
+             "lpips_test": round(float(np.mean(lpipss)), 4),
              "psnr_test_static": round(float(np.mean(psnrs_static)), 2) if psnrs_static else None,
              "pose_opt": bool(a.pose_opt), "drop_blurry": a.drop_blurry, "mask_people": bool(a.mask_people),
              "train_minutes": round(train_s / 60, 1), "total_minutes": round((time.time() - t0) / 60, 1),

@@ -1,0 +1,51 @@
+{
+  "page": "video.html",
+  "fps": 60,
+  "size": [
+    1920,
+    1080
+  ],
+  "score": "score.py",
+  "cuts": [
+    6.4,
+    11.6,
+    16.4,
+    18.6,
+    20.6
+  ],
+  "keys": [
+    0.8,
+    2.5,
+    4.5,
+    6.0,
+    8.5,
+    10.5,
+    12.8,
+    14.5,
+    17.8,
+    19.5,
+    21.0,
+    23.0
+  ],
+  "banned": [
+    "replace",
+    "Claude",
+    "ScanCapture",
+    "PhoneScan app"
+  ],
+  "read_wps": 4,
+  "exports": {
+    "release": {
+      "name": "pioneer-home-film.mp4"
+    },
+    "readme": {
+      "name": "pioneer-home-film-readme.mp4",
+      "max_mb": 10
+    },
+    "preview": {
+      "name": "pioneer-home-film.webp",
+      "fps": 30,
+      "width": 480
+    }
+  }
+}

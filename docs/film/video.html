@@ -1,0 +1,241 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Pioneer Home</title>
+<style>html,body{margin:0;background:#f6faf8;overflow:hidden}canvas{display:block}</style>
+<script src="mvh.js"></script>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+// Pioneer Home film, ~24 s. One continuous camera through the real scanned room (robot_link map: cloud, keyframe path,
+// the localized pose). Light and airy, the icon's mint: the room fills in where the walk looked, the floor plan settles,
+// Pioneer appears where the robot really localized, the real app rises up, and the camera lifts to the plan.
+const W = 1920, H = 1080, FILM_END = 24.0;
+const { span, ease, easeOut, fadeWindow, lerp, clamp } = MVH;
+const g = document.getElementById("c").getContext("2d");
+const INK = "#16202a", DIM = "#5d6b78", MINT = "64,190,160", BLUE = "62,106,225";
+const SERIF = 'ui-serif, "New York", Georgia, serif', MONO = 'ui-monospace, Menlo, monospace', SANS = "system-ui, sans-serif";
+
+let ROOM, IMG = {}, VID = {};
+const load = src => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+const loadVid = src => new Promise((res, rej) => { const v = document.createElement("video"); v.muted = true; v.preload = "auto"; v.src = src; v.onloadeddata = () => res(v); v.onerror = rej; });
+const seek = (v, s) => new Promise(res => { s = clamp(s, 0, v.duration - 0.04); if (Math.abs(v.currentTime - s) < 0.001) return res(); v.onseeked = () => res(); v.currentTime = s; });
+const CL = document.createElement("canvas"); CL.width = W; CL.height = H;
+const cl = CL.getContext("2d");
+let BUF, ZB;
+window.__setup = async () => {
+  ROOM = await (await fetch("room.json")).json();
+  IMG.plushie = await load("media/plushie.png"); IMG.icon = await load("media/icon.png");
+  VID.loc = await loadVid("media/loc.webm"); VID.map2 = await loadVid("media/map2.webm");
+  BUF = cl.createImageData(W, H); ZB = new Float32Array(W * H);
+  await document.fonts.ready;
+};
+
+// --- camera: one move for the whole film ----------------------------------------------------------------------------
+const CENTER = [0.1, 0, 0.7], CUT = 1.6;
+function camAt(t) {
+  // a high orbit during the walk, down and in for the map and the find, then up to top-down for the end
+  const yaw = lerp(-2.25, 0.35, ease(span(t, 0, 17))) + 0.15 * ease(span(t, 17, 22));
+  const pitch = t < 17 ? lerp(0.78, 0.42, ease(span(t, 3, 12))) : lerp(0.42, 1.52, ease(span(t, 18.6, 22.4)));
+  const dist = t < 11 ? lerp(7.8, 6.0, ease(span(t, 0, 10))) : t < 17 ? lerp(6.0, 4.6, ease(span(t, 11, 14))) : lerp(4.6, 8.2, ease(span(t, 18.6, 22.4)));
+  const k = ease(span(t, 11, 13.5));
+  const tgt = [lerp(CENTER[0], 0.38, k), lerp(0, -0.45, k), lerp(0.9, 0.7, k)];
+  const T = tgt.map((v, i) => lerp(v, [0.1, 0, 0][i], ease(span(t, 18.6, 22.4))));
+  const eye = [T[0] + dist * Math.cos(pitch) * Math.cos(yaw), T[1] + dist * Math.cos(pitch) * Math.sin(yaw), T[2] + dist * Math.sin(pitch)];
+  return basis(eye, T, 1150 + 120 * ease(span(t, 11, 14)));
+}
+function basis(eye, tgt, f) {
+  const n = v => { const l = Math.hypot(...v); return v.map(x => x / l); };
+  const fwd = n(tgt.map((v, i) => v - eye[i]));
+  const up0 = Math.abs(fwd[2]) > 0.98 ? [0, 1, 0] : [0, 0, 1];
+  const right = n([fwd[1] * up0[2] - fwd[2] * up0[1], fwd[2] * up0[0] - fwd[0] * up0[2], fwd[0] * up0[1] - fwd[1] * up0[0]]);
+  const up = [right[1] * fwd[2] - right[2] * fwd[1], right[2] * fwd[0] - right[0] * fwd[2], right[0] * fwd[1] - right[1] * fwd[0]];
+  return { eye, fwd, right, up, f };
+}
+function proj(c, x, y, z) {
+  const vx = x - c.eye[0], vy = y - c.eye[1], vz = z - c.eye[2];
+  const zz = vx * c.fwd[0] + vy * c.fwd[1] + vz * c.fwd[2];
+  if (zz < 0.2) return null;
+  return [W / 2 + c.f * (vx * c.right[0] + vy * c.right[1] + vz * c.right[2]) / zz, H / 2 - c.f * (vx * c.up[0] + vy * c.up[1] + vz * c.up[2]) / zz, zz];
+}
+
+// --- the room -------------------------------------------------------------------------------------------------------
+// points appear when the walk first saw them (u = how far along the walk), with a mint flash that settles to colour
+function room(c, u, k) {
+  const P = ROOM.points, Cc = ROOM.colors, S = ROOM.seen, d = BUF.data;
+  d.fill(0); ZB.fill(1e9);
+  for (let i = 0; i < S.length; i++) {
+    const age = u - S[i];
+    if (age < 0) break;                                    // sorted by when they were seen
+    if (P[3 * i + 2] > CUT) continue;                      // a dollhouse cut, like the app's own map
+    const p = proj(c, P[3 * i], P[3 * i + 1], P[3 * i + 2]);
+    if (!p) continue;
+    const r = p[2] < 3.2 ? 3 : 2, fl = clamp(1 - age / 0.12);
+    const R = lerp(Cc[3 * i], 90, fl * 0.8), G = lerp(Cc[3 * i + 1], 215, fl * 0.8), B = lerp(Cc[3 * i + 2], 185, fl * 0.8);
+    const x0 = p[0] | 0, y0 = p[1] | 0;
+    for (let dy = 0; dy < r; dy++) for (let dx = 0; dx < r; dx++) {
+      const x = x0 + dx, y = y0 + dy;
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      const o = y * W + x;
+      if (p[2] >= ZB[o]) continue;
+      ZB[o] = p[2]; d[4 * o] = R; d[4 * o + 1] = G; d[4 * o + 2] = B; d[4 * o + 3] = 255 * k;
+    }
+  }
+  cl.putImageData(BUF, 0, 0);
+  g.drawImage(CL, 0, 0);
+}
+
+function poly(c, pts, style, width, alpha = 1) {
+  g.save(); g.globalAlpha *= alpha; g.strokeStyle = style; g.lineWidth = width; g.lineCap = g.lineJoin = "round";
+  g.beginPath(); let on = false;
+  for (const q of pts) { const p = proj(c, ...q); if (!p) { on = false; continue; } on ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); on = true; }
+  g.stroke(); g.restore();
+}
+function pathAt(u) {                                        // position along the keyframe path, u in 0..1
+  const L = ROOM.path, x = clamp(u) * (L.length - 1), i = Math.min(L.length - 2, Math.floor(x)), f = x - i;
+  return { p: L[i].map((v, j) => lerp(v, L[i + 1][j], f)), d: ROOM.look[i] };
+}
+// the phone doing the scan: a small ink phone with its mint view cone
+function scanner(c, u, k) {
+  if (k <= 0) return;
+  const { p, d } = pathAt(u);
+  const tip = proj(c, ...p); if (!tip) return;
+  const far = [p[0] + d[0] * 0.9, p[1] + d[1] * 0.9, p[2] + d[2] * 0.9];
+  const side = [-d[1], d[0], 0].map(v => v * 0.38);
+  const corners = [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([a, b]) => proj(c, far[0] + side[0] * a, far[1] + side[1] * a, far[2] + 0.3 * b));
+  g.save(); g.globalAlpha *= k;
+  g.fillStyle = `rgba(${MINT},0.16)`; g.strokeStyle = `rgba(${MINT},0.9)`; g.lineWidth = 1.5;
+  if (corners.every(Boolean)) {
+    g.beginPath(); g.moveTo(tip[0], tip[1]); corners.forEach(q => g.lineTo(q[0], q[1])); g.closePath(); g.fill();
+    corners.forEach(q => { g.beginPath(); g.moveTo(tip[0], tip[1]); g.lineTo(q[0], q[1]); g.stroke(); });
+  }
+  g.fillStyle = INK; g.beginPath(); g.roundRect(tip[0] - 9, tip[1] - 15, 18, 30, 5); g.fill();
+  g.restore();
+}
+
+// --- type: a serif line wiped in from the left with a soft edge, centred low --------------------------------------
+function line(str, t, a, b, o = {}) {
+  const k = fadeWindow(t, a, b, 0.2, 0.45);
+  if (k <= 0) return;
+  const size = o.size || 64, y = o.y || 940, cx = o.x || W / 2;
+  g.save(); g.font = `${o.weight || 400} ${size}px ${o.font || SERIF}`; g.textAlign = "center";
+  const w = g.measureText(str).width, x0 = cx - w / 2;
+  const e = clamp(easeOut(span(t, a, a + (o.wipe || 0.7))) * 1.1);
+  const col = o.color || INK, grad = g.createLinearGradient(x0 - 40, 0, x0 + w + 40, 0);
+  grad.addColorStop(0, col); grad.addColorStop(clamp(e - 0.02), col);
+  grad.addColorStop(clamp(e + 0.06), "rgba(0,0,0,0)"); grad.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = e >= 1 ? col : grad; g.globalAlpha = k; g.fillText(str, cx, y + 10 * (1 - e));
+  g.restore();
+}
+function label(str, x, y, k, o = {}) {
+  if (k <= 0) return;
+  g.save(); g.globalAlpha *= k; g.font = `${o.weight || 500} ${o.size || 20}px ${MONO}`; g.fillStyle = o.color || DIM;
+  g.textAlign = o.align || "left"; if (o.track) g.letterSpacing = o.track + "px"; g.fillText(str, x, y); g.restore();
+}
+
+function backdrop(t) {
+  g.fillStyle = "#f6faf8"; g.fillRect(0, 0, W, H);
+  const glow = (x, y, r, rgb, a) => { const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, `rgba(${rgb},${a})`); gr.addColorStop(1, `rgba(${rgb},0)`); g.fillStyle = gr; g.fillRect(0, 0, W, H); };
+  glow(W * (0.2 + 0.04 * Math.sin(t * 0.4)), H * 0.25, 900, "150,225,200", 0.45);
+  glow(W * (0.85 + 0.03 * Math.cos(t * 0.3)), H * 0.2, 800, "190,210,255", 0.40);
+}
+// a soft pale band behind the captions so the room never fights the type
+function band(k) {
+  if (k <= 0) return;
+  const gr = g.createLinearGradient(0, H * 0.72, 0, H);
+  gr.addColorStop(0, "rgba(246,250,248,0)"); gr.addColorStop(0.45, `rgba(246,250,248,${0.85 * k})`); gr.addColorStop(1, `rgba(246,250,248,${0.95 * k})`);
+  g.fillStyle = gr; g.fillRect(0, H * 0.72, W, H * 0.28);
+}
+
+// --- the film -------------------------------------------------------------------------------------------------------
+const FOUND = [0.384, -0.614], FOUND_AT = 11.6;              // the robot's real localized pose (robot_link /localize)
+
+async function render(t) {
+  backdrop(t);
+  const c = camAt(t);
+  const u = clamp(ease(span(t, 0.15, 6.2)) * 1.02);          // how far the walk has got
+
+  // the floor plan settles under the room after the walk
+  const fk = easeOut(span(t, 6.2, 7.6)) * (1 - span(t, 20.6, 21.3));
+  if (fk > 0) {
+    for (let v = -2.25; v <= 2.31; v += 0.5) poly(c, [[v, -2.0, 0], [v, 2.0, 0]], "rgba(22,32,42,0.10)", 1, fk);
+    for (let v = -2.0; v <= 2.01; v += 0.5) poly(c, [[-2.25, v, 0], [2.3, v, 0]], "rgba(22,32,42,0.10)", 1, fk);
+    poly(c, [[-2.3, -2.05, 0], [2.35, -2.05, 0], [2.35, 2.05, 0], [-2.3, 2.05, 0], [-2.3, -2.05, 0]], `rgba(${MINT},0.9)`, 2.5, fk);
+  }
+  room(c, u, 1);
+
+  // the walk: the route drawn on the floor behind the phone
+  const trail = ROOM.path.slice(0, Math.max(1, Math.ceil(u * (ROOM.path.length - 1)) + 1)).map(p => [p[0], p[1], 0.01]);
+  poly(c, trail, `rgba(${BLUE},0.85)`, 4, 1 - span(t, 18.6, 19.6));
+  scanner(c, u, fadeWindow(t, 0, 7.0, 0.1, 0.6));
+
+  band(1 - span(t, 20.4, 21.0));
+  line("Walk around your home.", t, 0.5, 3.2);
+  line("The room fills in where you looked.", t, 3.4, 6.4);
+  line("Pioneer turns it into a map.", t, 6.8, 10.8);
+  label("LIVING-ROOM   ·   36 KEYFRAMES   ·   4.6 × 4.1 M", W / 2, 1000, fadeWindow(t, 7.4, 10.8, 0.3, 0.45), { align: "center", size: 18, track: 3 });
+
+  // the find: Pioneer stands where the robot really localized, a ring pulses at its feet
+  const pk = easeOut(span(t, FOUND_AT, FOUND_AT + 0.6)) * (1 - span(t, 16.0, 16.6));
+  if (pk > 0) {
+    for (let j = 0; j < 3; j++) {
+      const ph = ((t - FOUND_AT) * 0.7 + j / 3) % 1, rr = 0.2 + 0.9 * ph, ring = [];
+      for (let a = 0; a <= 40; a++) ring.push([FOUND[0] + rr * Math.cos(a / 40 * 2 * Math.PI), FOUND[1] + rr * Math.sin(a / 40 * 2 * Math.PI), 0.02]);
+      poly(c, ring, `rgba(${MINT},1)`, 3, pk * (1 - ph));
+    }
+    const foot = proj(c, FOUND[0], FOUND[1], 0), head = proj(c, FOUND[0], FOUND[1], 1.25);
+    if (foot && head) {
+      const ph = foot[1] - head[1], pw = IMG.plushie.width * ph / IMG.plushie.height, drop = 60 * (1 - pk);
+      g.save(); g.globalAlpha = pk;
+      g.fillStyle = "rgba(20,40,40,0.18)"; g.beginPath(); g.ellipse(foot[0], foot[1], pw * 0.45, pw * 0.12, 0, 0, 7); g.fill();
+      g.translate(foot[0], foot[1] - drop); g.rotate(0.04 * Math.sin((t - FOUND_AT) * 2.4));
+      g.drawImage(IMG.plushie, -pw / 2, -ph, pw, ph); g.restore();
+      const lk = pk * easeOut(span(t, FOUND_AT + 0.7, FOUND_AT + 1.2)) * (1 - span(t, 16.2, 16.6));
+      const lx = head[0] + pw * 0.6, ly = head[1] + ph * 0.12;
+      g.save(); g.globalAlpha = lk; g.strokeStyle = INK; g.lineWidth = 1.5;
+      g.beginPath(); g.moveTo(head[0] + pw * 0.22, head[1] + ph * 0.22); g.lineTo(lx - 6, ly); g.stroke(); g.restore();
+      g.save(); g.globalAlpha = lk * 0.92; g.fillStyle = "#fbfdfc"; g.shadowColor = "rgba(20,40,60,0.15)"; g.shadowBlur = 20;
+      g.beginPath(); g.roundRect(lx - 6, ly - 52, 340, 100, 14); g.fill(); g.restore();
+      label("x 0.38 m   y −0.61 m", lx + 8, ly - 14, lk, { color: INK, size: 24, weight: 600 });
+      label("heading 130°  ·  65 matches", lx + 8, ly + 30, lk, { size: 19 });
+    }
+  }
+  line("Tap Localize. Pioneer knows where it is.", t, FOUND_AT + 0.4, 16.4, { size: 60 });
+
+  // the app itself rises up: the real screens, then back down
+  const ak = ease(span(t, 16.4, 17.2)) * (1 - ease(span(t, 20.0, 20.7)));
+  if (ak > 0) {
+    const v = t < 18.6 ? VID.loc : VID.map2;
+    await seek(v, t < 18.6 ? 3.8 + (t - 16.4) * 0.8 : (t - 18.6));
+    g.save(); g.globalAlpha = ak * 0.7; g.fillStyle = "#f6faf8"; g.fillRect(0, 0, W, H); g.restore();
+    const s = 0.95, w = 404 * s, h = 876 * s, cx = W / 2 + 360, cy = H / 2 + 20 + (1 - ak) * 900;
+    g.save(); g.translate(cx, cy); g.rotate(0.05 * (1 - ak));
+    g.shadowColor = "rgba(20,40,60,0.25)"; g.shadowBlur = 70; g.shadowOffsetY = 30;
+    g.fillStyle = "#fcfdfd"; g.beginPath(); g.roundRect(-w / 2 - 12, -h / 2 - 12, w + 24, h + 24, 70); g.fill();
+    g.shadowColor = "transparent"; g.strokeStyle = "rgba(22,32,42,0.12)"; g.lineWidth = 2; g.stroke();
+    g.beginPath(); g.roundRect(-w / 2, -h / 2, w, h, 58); g.clip(); g.drawImage(v, -w / 2, -h / 2, w, h); g.restore();
+    line("Pioneer Home", t, 16.9, 20.2, { x: W / 2 - 300, y: 520, size: 104, weight: 600 });
+    line("for your iPhone and your robot", t, 17.3, 20.2, { x: W / 2 - 300, y: 590, size: 34, color: DIM, font: SANS });
+  }
+
+  // the end: up over the plan, the icon, how to start
+  const ek = easeOut(span(t, 20.6, 21.3));
+  if (ek > 0) {
+    g.save(); g.globalAlpha = ek * 0.8; g.fillStyle = "#f6faf8"; g.fillRect(0, 0, W, H); g.restore();
+    const s = 180 * (0.9 + 0.1 * ek);
+    g.save(); g.globalAlpha = ek; g.shadowColor = "rgba(20,60,60,0.22)"; g.shadowBlur = 40; g.shadowOffsetY = 14;
+    g.beginPath(); g.roundRect(W / 2 - s / 2, 300 - s / 2, s, s, s * 0.225); g.fillStyle = "#fff"; g.fill();
+    g.shadowColor = "transparent"; g.clip(); g.drawImage(IMG.icon, W / 2 - s / 2, 300 - s / 2, s, s); g.restore();
+    line("Pioneer Home", t, 20.8, FILM_END + 1, { y: 520, size: 112, weight: 600 });
+    line("Scan your home. Pioneer finds its way.", t, 21.2, FILM_END + 1, { y: 590, size: 36, color: DIM, font: SANS });
+    const ak2 = easeOut(span(t, 21.8, 22.3));
+    label("OPEN IN XCODE, PRESS RUN", W / 2, 700, ak2, { align: "center", size: 17, track: 4, color: "rgb(22,105,86)" });
+    label("ios/PhoneScan.xcodeproj", W / 2, 750, ak2, { align: "center", size: 32, color: INK });
+    label("github.com/allenabraham106/3D-reconstruction-by-iphone", W / 2, 792, ak2, { align: "center", size: 19 });
+  }
+
+  const fo = Math.max(1 - span(t, 0, 0.15), span(t, FILM_END - 0.5, FILM_END));
+  if (fo > 0) { g.fillStyle = `rgba(246,250,248,${fo})`; g.fillRect(0, 0, W, H); }
+}
+
+window.__FILM_END = FILM_END;
+window.__render = async t => { await render(t); return true; };
+</script></body></html>
