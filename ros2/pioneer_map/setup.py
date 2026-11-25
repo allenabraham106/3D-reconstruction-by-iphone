@@ -12,5 +12,6 @@ setup(
     ],
     install_requires=["setuptools", "numpy"],
     zip_safe=True,
-    entry_points={"console_scripts": ["voxel_publisher = pioneer_map.voxel_publisher:main"]},
+    entry_points={"console_scripts": ["voxel_publisher = pioneer_map.voxel_publisher:main",
+                                    "goto = pioneer_map.goto:main"]},
 )

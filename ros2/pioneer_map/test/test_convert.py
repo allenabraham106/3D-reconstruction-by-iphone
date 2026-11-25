@@ -41,3 +41,18 @@ def test_map_yaml_has_nav2_fields():
         assert k in y, k
     assert y["mode"] == "trinary" and len(y["origin"]) == 3 and y["resolution"] == 0.05
     assert os.path.exists(os.path.join(ROBOT_DIR, y["image"]))
+
+
+# ----------------------------------------------------------------------------- goto node helpers
+def test_goto_goal_and_path():
+    import math
+    from pioneer_map.goto import goal_from_result, path_from_result, yaw_quaternion
+    res = {"found": True, "goal": {"x": 2.0, "y": 1.0, "yaw": math.pi / 2}, "target_m": [2.0, 2.0, 1.0],
+           "path_m": [[0, 0], [1, 0], [2, 0], [2, 1]]}
+    assert goal_from_result(res) == (2.0, 1.0, math.pi / 2)
+    p = path_from_result(res)
+    assert len(p) == 4 and abs(p[0][2]) < 1e-9 and p[-1] == (2.0, 1.0, math.pi / 2)
+    assert abs(p[2][2] - math.pi / 2) < 1e-9          # heading toward the next point
+    x, y, z, w = yaw_quaternion(math.pi / 2)
+    assert abs(z - math.sqrt(0.5)) < 1e-9 and abs(w - math.sqrt(0.5)) < 1e-9
+    assert goal_from_result({"found": False, "confidence": 0.1}) is None

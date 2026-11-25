@@ -27,6 +27,26 @@ Launch arguments:
 
 In RViz, add *Map* (`/map`), *PointCloud2* (`/pioneer/voxels`) and *Marker* (`/pioneer/mesh`), with the fixed frame set to `map`.
 
+## Tell the robot where to go (`goto` node)
+
+Type a sentence, the robot drives there. `gpu/goto_server.py` (on the GPU machine) finds the place in the scan and plans the route; this node hands the goal to nav2.
+
+```bash
+python gpu/goto_server.py --host 0.0.0.0                                     # on the GPU machine
+ros2 run pioneer_map goto --ros-args -p server:=http://<gpu-machine>:8765 -p scan:=IMG_6075
+ros2 topic pub --once /pioneer/goto_text std_msgs/String "{data: 'take me to the red toolbox'}"
+```
+
+| Topic | Type | What |
+|---|---|---|
+| `/pioneer/goto_text` (in) | `std_msgs/String` | the sentence |
+| `/goal_pose` | `geometry_msgs/PoseStamped` | nav2's goal topic (the one RViz's "Nav2 Goal" uses): where the phone stood when it filmed the target, facing it |
+| `/pioneer/goto_path` | `nav_msgs/Path` | the planned route, for RViz |
+| `/pioneer/goto_target` | `geometry_msgs/PointStamped` | the object, in 3D |
+| `/pioneer/goto_status` | `std_msgs/String` | JSON: found or not, confidence, path length |
+
+`-p use_action:=true` sends a nav2 `NavigateToPose` action instead (needs `nav2_msgs`) and logs when the robot arrives. `-p result:=<result.json>` replays a saved `gpu/goto.py` result with no server. Everything is in the `map` frame of the same scan that `map.launch.py` serves. Tested on ROS 2 Jazzy: "take me to the red toolbox" published the goal on `/goal_pose` and the route on `/pioneer/goto_path` (nav2 itself was not installed on that machine).
+
 ## Notes
 
 - **Scale:** maps from plain video assume the phone was held about 1.4 m above the floor (`run.py --phone-height`), which is typically a few percent off. Captures from the Pioneer Home app are metric from ARKit.
