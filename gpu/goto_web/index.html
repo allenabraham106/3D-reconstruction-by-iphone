@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pioneer Go-To</title>
+<style>
+:root{--bg:#f4f7f7;--panel:#fff;--fg:#11201f;--mut:#566866;--acc:#0a7c72;--line:#d3e0de;--bad:#b3402e}
+@media(prefers-color-scheme:dark){:root{--bg:#0c1312;--panel:#141e1d;--fg:#e3eeec;--mut:#8fa5a2;--acc:#4cc9b8;--line:#243634;--bad:#ef8a75;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:auto;padding:28px 16px 48px;display:grid;gap:18px}
+h1{font-size:1.6rem;margin:0}
+.mut{color:var(--mut);font-size:14px}
+form{display:flex;gap:8px;flex-wrap:wrap}
+select,input,button{font:inherit;border-radius:6px;border:1px solid var(--line);padding:10px 12px;background:var(--panel);color:var(--fg)}
+input{flex:1 1 320px;min-width:0}
+button{background:var(--acc);color:var(--bg);border:0;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{background:transparent;color:var(--acc);border:1px solid var(--line);padding:5px 10px;font-weight:500;font-size:14px}
+.grid{display:grid;grid-template-columns:1.7fr 1fr;gap:12px;align-items:start}
+.side{display:grid;gap:10px;min-width:0}
+video,img{width:100%;display:block;border-radius:6px;border:1px solid var(--line);background:#000}
+.ph{aspect-ratio:16/9;display:grid;place-items:center;border:1px dashed var(--line);border-radius:6px;color:var(--mut);text-align:center;padding:16px}
+.bar{height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.bar>i{display:block;height:100%;width:0;background:var(--acc);transition:width .3s}
+.status{min-height:1.5em}
+.status b{color:var(--acc)} .err{color:var(--bad)}
+dl{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;margin:0;font-size:14px;font-variant-numeric:tabular-nums}
+dt{color:var(--mut)} dd{margin:0}
+@media(max-width:760px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>Tell the robot where to go</h1>
+    <div class="mut">Type a place or object. CLIP finds it in the iPhone scan, ViPE depth puts it in 3D, the robot's floor map gives the path, and the Gaussian splat shows the trip at a humanoid's eye height.</div>
+  </div>
+  <form id="f">
+    <select id="scan" aria-label="Scan"></select>
+    <input id="q" autocomplete="off" placeholder="e.g. take me to the red toolbox" aria-label="Where to go">
+    <button id="go" type="submit">Go</button>
+  </form>
+  <div class="chips" id="chips"></div>
+  <div class="status" id="st"></div>
+  <div class="bar" aria-hidden="true"><i id="bar"></i></div>
+  <div class="grid">
+    <div id="vid"><div class="ph">The trip appears here.</div></div>
+    <div class="side">
+      <div id="plan"></div>
+      <div id="match"></div>
+      <dl id="facts"></dl>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const IDEAS = ["the red toolbox", "the whiteboard", "the grey couch", "the ring light", "the robot", "the wooden cabinets", "a giraffe"];
+let busy = false;
+IDEAS.forEach(t => { const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = t;
+  b.onclick = () => { $("q").value = t; go(); }; $("chips").append(b); });
+fetch("/api/scans").then(r => r.json()).then(list => list.forEach(s => {
+  const o = document.createElement("option"); o.value = s.name; o.textContent = s.title + " (" + s.name + ")"; $("scan").append(o); }));
+function img(id, src, alt){ const el = $(id); el.textContent = ""; const i = new Image(); i.src = src; i.alt = alt; el.append(i); }
+function facts(r){
+  const dl = $("facts"); dl.textContent = "";
+  const add = (k, v) => { const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = k; dd.textContent = v; dl.append(dt, dd); };
+  add("looking for", r.query); add("confidence", r.confidence.toFixed(2));
+  if (r.target_m){ add("target", r.target_m.map(v => v.toFixed(2)).join(", ") + " m"); add("path", r.path_length_m.toFixed(1) + " m");
+    add("stops", r.stop_distance_m.toFixed(2) + " m from it"); add("find + plan", r.find_plan_s + " s"); }
+  if (r.render_s) add("render", r.render_s + " s for " + r.video_s + " s of video");
+}
+async function go(){
+  const prompt = $("q").value.trim(); if (!prompt || busy) return;
+  busy = true; $("go").disabled = true; $("bar").style.width = "0";
+  $("st").textContent = "Finding it in the scan..."; $("st").className = "status";
+  try {
+    const r = await fetch("/api/goto", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({scan: $("scan").value, prompt})});
+    const j = await r.json(); if (!r.ok) throw new Error(j.error || "request failed");
+    let shownPlan = false;
+    for (;;) {
+      await new Promise(res => setTimeout(res, 700));
+      const s = await (await fetch("/api/job/" + j.job)).json();
+      const base = "/files/" + j.job + "/";
+      if (s.state === "error") throw new Error(s.error);
+      if (s.result && !shownPlan) {
+        shownPlan = true; facts(s.result);
+        if (!s.result.found) { $("st").textContent = `"${s.result.query}" isn't in this scan (confidence ${s.result.confidence.toFixed(2)}).`; break; }
+        img("plan", base + "plan.png", "Planned path on the floor map"); img("match", base + "match.jpg", "Where it was found in the phone video");
+      }
+      if (s.state === "finding") $("st").textContent = s.elapsed_s > 5 ? "Loading this scan (first time only)..." : "Finding it in the scan...";
+      if (s.state === "rendering") { const st = $("st"); st.textContent = ""; const b = document.createElement("b"); b.textContent = s.result.query;
+        st.append("Found ", b, ". Rendering the trip... " + Math.round(s.progress * 100) + "%"); $("bar").style.width = (s.progress * 100) + "%"; }
+      if (s.state === "done") {
+        $("bar").style.width = "100%"; facts(s.result);
+        const v = document.createElement("video"); v.src = base + "goto.mp4"; v.autoplay = v.muted = v.loop = v.playsInline = true; v.controls = true;
+        $("vid").textContent = ""; $("vid").append(v);
+        const st = $("st"); st.textContent = ""; const b = document.createElement("b"); b.textContent = s.result.query; st.append("Arrived at ", b, ".");
+        break;
+      }
+    }
+  } catch (e) { $("st").textContent = "Something went wrong: " + e.message; $("st").className = "status err"; }
+  finally { busy = false; $("go").disabled = false; }
+}
+$("f").addEventListener("submit", e => { e.preventDefault(); go(); });
+</script>
+</body>
+</html>

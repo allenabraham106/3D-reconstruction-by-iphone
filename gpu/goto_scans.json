@@ -1,0 +1,8 @@
+{
+ "scans": [
+  {"name": "IMG_6075", "title": "Robotics lab", "ckpt": "out_splat/IMG_6075/ckpt.pt",
+   "vipe": "out_vipe/default/vipe", "video": "IMG_6075", "robot": "out_vipe/crisp/IMG_6075/robot", "cache": "out_goto/IMG_6075"},
+  {"name": "IMG_6513", "title": "Robotics lab, second walk", "ckpt": "out_splat/IMG_6513/ckpt.pt",
+   "vipe": "out_vipe/default/vipe", "video": "IMG_6513", "robot": "out_vipe/default/IMG_6513/robot", "cache": "out_goto/IMG_6513"}
+ ]
+}

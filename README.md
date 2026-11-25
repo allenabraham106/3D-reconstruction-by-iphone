@@ -16,22 +16,35 @@ This reproduces the kind of result in the NVIDIA-stack demo (ViPE-style pose and
 
 <img src="docs/img/goto_toolbox_plan.png" width="38%" align="right">
 
-*"the red toolbox": found in the phone video by CLIP, placed in 3D with ViPE's depth, reached by an 8.0 m path planned on the robot's 5 cm floor map (right, green; star = target), rendered from the Gaussian splat at a humanoid's eye height (1.35 m). [Full-quality MP4](docs/video/goto_toolbox.mp4).*
+*"the red toolbox": found in the phone video by CLIP, placed in 3D with ViPE's depth, reached by a 4.6 m path planned on the robot's 5 cm floor map (right, green; star = target), rendered from the Gaussian splat at a humanoid's eye height (1.35 m). [Full-quality MP4](docs/video/goto_toolbox.mp4).*
 
 ```bash
 python gpu/goto.py out_splat/IMG_6075/ckpt.pt out_vipe/default/vipe IMG_6075 \
     out_vipe/crisp/IMG_6075/robot out_goto/IMG_6075 "the red toolbox" "the whiteboard"
 ```
 
-1. **Find it.** Every 3rd ViPE frame is cut into square tiles at three sizes and embedded with CLIP (ViT-L/14 and ViT-B/16, averaged). The prompt is scored against every tile and against distractor prompts (wall, floor, person, blur...). The best tiles are lifted to 3D with ViPE's metric depth, and the 3D spot most of them agree on wins. Nothing above 0.5 of the score against the distractors means *not in this scan* ("a giraffe" 0.15, "a swimming pool" 0.17).
-2. **Plan.** Dijkstra on a nav2-style costmap of the robot map: obstacles block, cells within the robot's radius cost more, and anywhere the phone was carried counts as drivable. The robot stops about 1.3 m from the target, close to where the phone stood when it saw it, because the splat is sharpest from there.
-3. **Show.** The splat rendered along the path, turning to face the target on the way in. Plus `plan.png`, `match.jpg` (the tile CLIP picked) and `result.json` (target in map metres, path length, confidence) per prompt.
+1. **Find it.** Every 3rd ViPE frame is cut into square tiles at three sizes and embedded with CLIP (ViT-L/14 and ViT-B/16, averaged). The prompt ("please take me to the red toolbox" works; the command words are stripped) is scored against every tile, and against ~120 everyday indoor objects: a tile gets a bonus only if it looks more like the prompt than like anything on that list. The best tiles are lifted to 3D with ViPE's metric depth, and the 3D spot most of them agree on wins. If the prompt never beats the list (share under 0.14), it's reported as *not in this scan*: "a giraffe" 0.02-0.03 in both rooms, "a swimming pool" 0.02; the real objects scored 0.16-0.96. The margin is thin: in the second room "the bed" scored 0.13 on a chair with a jacket over it.
+2. **Plan.** Dijkstra on a nav2-style costmap of the robot map: obstacles block, cells within the robot's radius cost more, and anywhere the phone was carried counts as drivable. The goal is the floor under a camera the phone actually filmed the target from, 0.8-3 m away, with the target near the middle of that view.
+3. **Show.** The splat rendered along the path at a humanoid's eye height, turning toward the target, and in the last second easing into that real phone view, where the splat is sharpest (people the phone filmed are left out of the splat, so they're gone). Plus `plan.png`, `match.jpg` (the tile CLIP picked) and `result.json` (target, route and nav2 goal pose in map metres) per prompt.
+
+### Live: type anything (`gpu/goto_server.py`)
+
+```bash
+python gpu/goto_server.py                 # scans listed in gpu/goto_scans.json; --host 0.0.0.0 for other machines
+# open http://localhost:8765
+```
+
+A web page on the GPU machine: pick a scan, type where to go. The match and the planned path show in 0.6 s, and the trip video ~25 s later (RTX 5070 Ti, 1280x720). A scan loads in ~25 s on first use and stays in memory. `GET /api/plan?scan=&prompt=` returns the plan without a video.
+
+### On the robot (`ros2 run pioneer_map goto`)
+
+The same plan as a nav2 goal: publish a sentence on `/pioneer/goto_text` and the node asks the server, then publishes the goal on `/goal_pose` (or a `NavigateToPose` action), the route on `/pioneer/goto_path` and the object on `/pioneer/goto_target`, all in the scan's `map` frame. See [ros2/pioneer_map](ros2/pioneer_map/README.md#tell-the-robot-where-to-go-goto-node).
 
 ![four more trips](docs/img/goto_grid.jpg)
 
-*Four more prompts in the same lab. Each: where the robot arrives (splat render), the frame CLIP matched (red box), the planned path.*
+*Four more prompts, two from each walk of the lab (walk 2, IMG_6513, has its own splat: 29.7 dB PSNR on held-out frames, static scene). Each: where the robot arrives (splat render), the frame CLIP matched (red box), the planned path.*
 
-Tested on the office scan: of 10 things in the lab, CLIP found 9 (checked by eye); "the humanoid robot" picked the robot arm by the cabinets instead of the white humanoid. Both prompts for things that aren't there were rejected. "The window" is found, but the splat renders glass poorly, so that trip ends on a blurry view. Indexing takes ~1.5 min once per scan, a query under a second, and a trip render ~30 s on an RTX 5070 Ti.
+Tested on both walks of the lab: on walk 1, 10 objects checked by eye were all found in the right place ("the humanoid robot" picks the tall white robot by the desk, which may be what you mean; a humanoid upper body on a chair is the other candidate). On walk 2, 7 of 8 prompts landed right (the ring light is found, but its arrival view doesn't show it). "A giraffe" and "a swimming pool" are rejected in both. Arrivals at glass and plain walls are now sharp because they end on a real phone view. Indexing takes ~1.5 min once per scan, a query 0.6 s, and a trip render ~25 s on an RTX 5070 Ti.
 
 ## Real iPhone 17 scans
 
