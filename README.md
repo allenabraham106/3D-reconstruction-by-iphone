@@ -10,6 +10,29 @@ Walk through a room or floor with an iPhone. Get a **colored 3D mesh**, the came
 
 This reproduces the kind of result in the NVIDIA-stack demo (ViPE-style pose and dense-depth reconstruction from phone video). It runs on a normal laptop CPU, with no GPU and no downloaded neural-network weights.
 
+## Tell the robot where to go (`gpu/goto.py`)
+
+[![go to the red toolbox](docs/img/goto_toolbox.gif)](docs/video/goto_toolbox.mp4)
+
+<img src="docs/img/goto_toolbox_plan.png" width="38%" align="right">
+
+*"the red toolbox": found in the phone video by CLIP, placed in 3D with ViPE's depth, reached by an 8.0 m path planned on the robot's 5 cm floor map (right, green; star = target), rendered from the Gaussian splat at a humanoid's eye height (1.35 m). [Full-quality MP4](docs/video/goto_toolbox.mp4).*
+
+```bash
+python gpu/goto.py out_splat/IMG_6075/ckpt.pt out_vipe/default/vipe IMG_6075 \
+    out_vipe/crisp/IMG_6075/robot out_goto/IMG_6075 "the red toolbox" "the whiteboard"
+```
+
+1. **Find it.** Every 3rd ViPE frame is cut into square tiles at three sizes and embedded with CLIP (ViT-L/14 and ViT-B/16, averaged). The prompt is scored against every tile and against distractor prompts (wall, floor, person, blur...). The best tiles are lifted to 3D with ViPE's metric depth, and the 3D spot most of them agree on wins. Nothing above 0.5 of the score against the distractors means *not in this scan* ("a giraffe" 0.15, "a swimming pool" 0.17).
+2. **Plan.** Dijkstra on a nav2-style costmap of the robot map: obstacles block, cells within the robot's radius cost more, and anywhere the phone was carried counts as drivable. The robot stops about 1.3 m from the target, close to where the phone stood when it saw it, because the splat is sharpest from there.
+3. **Show.** The splat rendered along the path, turning to face the target on the way in. Plus `plan.png`, `match.jpg` (the tile CLIP picked) and `result.json` (target in map metres, path length, confidence) per prompt.
+
+![four more trips](docs/img/goto_grid.jpg)
+
+*Four more prompts in the same lab. Each: where the robot arrives (splat render), the frame CLIP matched (red box), the planned path.*
+
+Tested on the office scan: of 10 things in the lab, CLIP found 9 (checked by eye); "the humanoid robot" picked the robot arm by the cabinets instead of the white humanoid. Both prompts for things that aren't there were rejected. "The window" is found, but the splat renders glass poorly, so that trip ends on a blurry view. Indexing takes ~1.5 min once per scan, a query under a second, and a trip render ~30 s on an RTX 5070 Ti.
+
 ## Real iPhone 17 scans
 
 | | Apartment walk-through | Robotics lab / office |
