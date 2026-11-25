@@ -43,7 +43,7 @@ class Pose:
 
 
 class Localizer:
-    def __init__(self, out_dir: Path, min_inliers: int = 25, ratio: float = 0.85):
+    def __init__(self, out_dir: Path, min_inliers: int = 25, ratio: float = 0.85, max_side: int = 720, checks: int = 32):
         self.out_dir = Path(out_dir)
         data = np.load(self.out_dir / "robot" / "reloc_map.npz")
         self.points = data["points"].astype(np.float64)
@@ -51,7 +51,10 @@ class Localizer:
         self.owner = data["owner"]
         self.min_inliers = min_inliers
         self.ratio = ratio
-        self.matcher = cv2.FlannBasedMatcher(dict(algorithm=1, trees=4), dict(checks=64))
+        # queries are detected at <= max_side px with 32 FLANN checks: on IMG_1429 (139 held-out keyframes) 77 ms
+        # a query instead of 177 ms at 1280 px / 64 checks, same 137 localized, median error 3.1 vs 2.6 mm
+        self.max_side = max_side
+        self.matcher = cv2.FlannBasedMatcher(dict(algorithm=1, trees=4), dict(checks=checks))
         self.matcher.add([self.desc])
         self.matcher.train()
         self.grid = self._load_grid()
@@ -73,6 +76,10 @@ class Localizer:
 
     def localize(self, image: np.ndarray, K: np.ndarray, n_features: int = 4000) -> Pose:
         gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        s = self.max_side / max(gray.shape)
+        if s < 1:
+            gray = cv2.resize(gray, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+            K = np.diag([s, s, 1.0]) @ K
         kps, desc = detect(gray, n_features)
         if len(desc) < self.min_inliers:
             return Pose(False, f"only {len(desc)} features in the image: point the camera at a textured area")
