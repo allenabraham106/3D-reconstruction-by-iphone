@@ -1,0 +1,39 @@
+{
+ "scale_source": "input (metric depth)",
+ "frames_total": 231,
+ "frames_with_camera": 169,
+ "frames_with_camera_pct": 73.2,
+ "max_jump_x_median_step": 6.4,
+ "camera_height_spread_m": 0.47,
+ "camera_height_median_m": 1.609,
+ "floor_spread_mm": 52.6,
+ "floor_support": 0.067,
+ "depth_pixels_kept_median_pct": 96.1,
+ "mesh_triangles": 2515422,
+ "map_points": 1082736,
+ "floor_cells_seen": 5737,
+ "floor_cells_walked_only": 3557,
+ "obstacle_cells": 10753,
+ "false_obstacles_cleared_by_walk": 1095,
+ "floor_seen_pct": 61.7,
+ "scene_extent_m": [
+  10.85,
+  12.02,
+  2.96
+ ],
+ "glass_walls": 0,
+ "warnings": [],
+ "timings_s": null,
+ "scan": "IMG_6070",
+ "description": "apartment, dim evening light, 74 s",
+ "pipeline": "hybrid (SfM poses + ViPE depth)",
+ "machine": {
+  "python": "3.11.18",
+  "os": "Linux-7.0.0-43-generic-x86_64-with-glibc2.39",
+  "cpus": 16,
+  "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+  "ram_gb": 65.7,
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, 16303 MiB"
+ },
+ "date": "2026-11-24 23:59"
+}

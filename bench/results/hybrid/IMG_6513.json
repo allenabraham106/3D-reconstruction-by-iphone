@@ -1,0 +1,39 @@
+{
+ "scale_source": "input (metric depth)",
+ "frames_total": 289,
+ "frames_with_camera": 248,
+ "frames_with_camera_pct": 85.8,
+ "max_jump_x_median_step": 5.4,
+ "camera_height_spread_m": 0.435,
+ "camera_height_median_m": 1.768,
+ "floor_spread_mm": 52.9,
+ "floor_support": 0.041,
+ "depth_pixels_kept_median_pct": 93.9,
+ "mesh_triangles": 2673394,
+ "map_points": 1147372,
+ "floor_cells_seen": 2400,
+ "floor_cells_walked_only": 1978,
+ "obstacle_cells": 11989,
+ "false_obstacles_cleared_by_walk": 371,
+ "floor_seen_pct": 54.8,
+ "scene_extent_m": [
+  9.11,
+  9.07,
+  3.04
+ ],
+ "glass_walls": 0,
+ "warnings": [],
+ "timings_s": null,
+ "scan": "IMG_6513",
+ "description": "office, new walk (Nov 11), 76 s",
+ "pipeline": "hybrid (SfM poses + ViPE depth)",
+ "machine": {
+  "python": "3.11.18",
+  "os": "Linux-7.0.0-43-generic-x86_64-with-glibc2.39",
+  "cpus": 16,
+  "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+  "ram_gb": 65.7,
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, 16303 MiB"
+ },
+ "date": "2026-11-24 23:56"
+}

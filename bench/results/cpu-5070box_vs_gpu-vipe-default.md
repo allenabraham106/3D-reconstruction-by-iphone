@@ -78,6 +78,25 @@
 | Map warnings (e.g. bent map) | 0 | 1 | ✗ |
 | Total time (min) | 10.9 | 8.0 | ✓ |
 
+## IMG_6513 (office, new walk (Nov 11), 76 s)
+
+| | cpu-5070box | gpu-vipe-default | |
+|---|---|---|---|
+| Frames with a camera | 96.9% | 100.0% | ✓ |
+| Biggest camera jump (x median step) | 5.5 | 3.6 | ✓ |
+| Camera height spread, p5-p95 (m) | 0.378 | 0.353 | ✓ |
+| Floor spread (mm) | 40.4 | 54.3 | ✗ |
+| Floor support (share of low points on the floor plane) | 0.106 | 0.046 | ✗ |
+| Depth pixels kept, median per frame | 31.8% | 97.9% | ✓ |
+| Mesh triangles | 2,232,108 | 2,698,012 |  |
+| Floor cells seen (5 cm) | 2,883 | 3,034 | ✓ |
+| Floor seen vs only walked | 94.9% | 62.8% | ✗ |
+| Obstacle cells | 7,134 | 13,642 |  |
+| Scene extent (m) | [6.53, 6.91, 2.41] | [9.46, 9.19, 3.11] |  |
+| Scale from | phone_height=1.4m | input (metric depth) |  |
+| Map warnings (e.g. bent map) | 0 | 0 |  |
+| Total time (min) | 17.1 | 6.9 | ✓ |
+
 ## room (Mip-NeRF 360 room, 311 photos, reference poses)
 
 | | cpu-5070box | gpu-vipe-default | |
